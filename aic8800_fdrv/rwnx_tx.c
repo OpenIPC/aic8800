@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
  ******************************************************************************
  *
@@ -295,6 +294,13 @@ u16 rwnx_select_txq(struct rwnx_vif *rwnx_vif, struct sk_buff *skb)
     struct rwnx_txq *txq;
     u16 netdev_queue;
     bool tdls_mgmgt_frame = false;
+    int nx_bcmc_txq_ndev_idx = NX_BCMC_TXQ_NDEV_IDX;
+
+    if((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8801) || 
+        ((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DC ||
+        g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DW) && chip_id < 3)){
+            nx_bcmc_txq_ndev_idx = NX_BCMC_TXQ_NDEV_IDX_FOR_OLD_IC;
+    }
 
     switch (wdev->iftype) {
     case NL80211_IFTYPE_STATION:
@@ -314,22 +320,19 @@ u16 rwnx_select_txq(struct rwnx_vif *rwnx_vif, struct sk_buff *skb)
         break;
     }
     case NL80211_IFTYPE_AP_VLAN:
+        if (rwnx_vif->ap_vlan.sta_4a) {
+            sta = rwnx_vif->ap_vlan.sta_4a;
+            break;
+        }
+
+        /* AP_VLAN interface is not used for a 4A STA,
+           fallback searching sta amongs all AP's clients */
+        rwnx_vif = rwnx_vif->ap_vlan.master;
     case NL80211_IFTYPE_AP:
     case NL80211_IFTYPE_P2P_GO:
     {
         struct rwnx_sta *cur;
         struct ethhdr *eth = (struct ethhdr *)skb->data;
-	
-	if (wdev->iftype == NL80211_IFTYPE_AP_VLAN) {
-	    if (rwnx_vif->ap_vlan.sta_4a) {
-                sta = rwnx_vif->ap_vlan.sta_4a;
-                break;
-            }
-
-            /* AP_VLAN interface is not used for a 4A STA,
-               fallback searching sta amongs all AP's clients */
-            rwnx_vif = rwnx_vif->ap_vlan.master;	
-	}
 
         if (is_multicast_ether_addr(eth->h_dest)) {
             sta = &rwnx_hw->sta_table[rwnx_vif->ap.bcmc_index];
@@ -433,7 +436,7 @@ u16 rwnx_select_txq(struct rwnx_vif *rwnx_vif, struct sk_buff *skb)
            for AP interface, select BCMC queue
            (TODO: select another queue if BCMC queue is stopped) */
         skb->priority = PRIO_STA_NULL;
-        netdev_queue = NX_BCMC_TXQ_NDEV_IDX;
+        netdev_queue = nx_bcmc_txq_ndev_idx;
     }
     
 #ifndef CONFIG_ONE_TXQ
@@ -504,7 +507,7 @@ static struct rwnx_sta *rwnx_get_tx_priv(struct rwnx_vif *rwnx_vif,
     int nx_remote_sta_max = NX_REMOTE_STA_MAX;
     int nx_bcmc_txq_ndev_idx = NX_BCMC_TXQ_NDEV_IDX;
 
-    if((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8801) || 
+    if((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8801) ||
         ((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DC ||
         g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DW) && chip_id < 3)){
             nx_remote_sta_max = NX_REMOTE_STA_MAX_FOR_OLD_IC;
@@ -669,7 +672,8 @@ void rwnx_tx_push(struct rwnx_hw *rwnx_hw, struct rwnx_txhdr *txhdr, int flags)
 #ifdef AICWF_USB_SUPPORT
     if( ((sw_txhdr->desc.host.flags & TXU_CNTRL_MGMT) && \
 	((*(skb->data+sw_txhdr->headroom)==0xd0) || (*(skb->data+sw_txhdr->headroom)==0x10) || (*(skb->data+sw_txhdr->headroom)==0x30))) || \
-        (sw_txhdr->desc.host.ethertype == 0x8e88) ) { // 0xd0:Action, 0x10:AssocRsp, 0x8e88:EAPOL
+        (sw_txhdr->desc.host.ethertype == 0x8e88) || (sw_txhdr->desc.host.ethertype == 0xb488)) {
+	// 0xd0:Action, 0x10:AssocRsp, 0x8e88:EAPOL, 0xb488: WAPI
         sw_txhdr->need_cfm = 1;
         sw_txhdr->desc.host.status_desc_addr = ((1<<31) | rwnx_hw->usb_env.txdesc_free_idx[0]);
         aicwf_usb_host_txdesc_push(&(rwnx_hw->usb_env), 0, (long)(skb));
@@ -1467,7 +1471,7 @@ int rwnx_start_mgmt_xmit(struct rwnx_vif *vif, struct rwnx_sta *sta,
 
     //----------------------------------------------------------------------
 
-	if((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8801) || 
+	if((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8801) ||
 		((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DC ||
 		g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DW) && chip_id < 3)){
 		nx_off_chan_txq_idx = NX_OFF_CHAN_TXQ_IDX_FOR_OLD_IC;
@@ -1679,7 +1683,7 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
 
     printk("rwnx_start_monitor_if_xmit, skb_len=%d, rtap_len=%d\n", skb->len, rtap_len);
 
-    if((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8801) || 
+    if((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8801) ||
         ((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DC ||
         g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DW) && chip_id < 3)){
             nx_off_chan_txq_idx = NX_OFF_CHAN_TXQ_IDX_FOR_OLD_IC;

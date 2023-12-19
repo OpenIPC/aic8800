@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/memory.h>
 #include "md5.h"
  

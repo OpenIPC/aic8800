@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-
 #EXTRA_CFLAGS += $(USER_EXTRA_CFLAGS)
 #EXTRA_CFLAGS += -Wno-implicit-fallthrough
 
@@ -62,7 +60,7 @@ CONFIG_SDIO_SUPPORT =n
 CONFIG_USB_SUPPORT =y
 CONFIG_RX_REORDER ?=y
 CONFIG_ARP_OFFLOAD =y
-CONFIG_USE_5G ?= y
+CONFIG_USE_5G ?= n
 CONFIG_RADAR_OR_IR_DETECT =n
 CONFIG_DOWNLOAD_FW =n
 CONFIG_RFTEST=y
@@ -78,7 +76,7 @@ CONFIG_TXRX_THREAD_PRIO = n
 CONFIG_USB_ALIGN_DATA = n
 CONFIG_RX_TASKLET = n
 CONFIG_TX_TASKLET = n
-CONFIG_RX_NETIF_RECV_SKB = n
+CONFIG_RX_NETIF_RECV_SKB = y
 CONFIG_BR_SUPPORT = n
 CONFIG_USB_MSG_OUT_EP = y
 CONFIG_USB_MSG_IN_EP = y
@@ -92,12 +90,13 @@ CONFIG_GPIO_WAKEUP = n
 CONFIG_CREATE_TRACE_POINTS = n
 CONFIG_SUPPORT_REALTIME_CHANGE_MAC = y
 CONFIG_USE_USB_ZERO_PACKET = y
-# CONFIG_DEBUG_FS = n
+CONFIG_DEBUG_FS = n
 CONFIG_STA_SCAN_WHEN_P2P_WORKING = y
 CONFIG_SET_VENDOR_EXTENSION_IE = n
 CONFIG_VENDOR_GPIO = n
 CONFIG_FWLOG_EN = n
 CONFIG_FOR_IPCAM = n
+CONFIG_5M10M = n
 # Need to set fw path in BOARD_KERNEL_CMDLINE
 CONFIG_USE_FW_REQUEST = n
 CONFIG_USE_P2P0 = n
@@ -106,6 +105,10 @@ CONFIG_PER_STA_FC = n
 CONFIG_PREALLOC_RX_SKB = n
 CONFIG_PREALLOC_TXQ = y
 CONFIG_USE_WIRELESS_EXT = n
+CONFIG_DPD = n
+CONFIG_FORCE_DPD_CALIB = n
+CONFIG_GKI = n
+CONFIG_SCHED_SCAN = n
 
 # Support of MU-MIMO transmission (need FW support)
 ifeq ($(CONFIG_RWNX_BFMER), y)
@@ -153,7 +156,9 @@ $(MODULE_NAME)-y := \
 	rwnx_tdls.o            \
 	regdb.o                \
 	md5.o                  \
+	aic_vendor.o           \
 	aicwf_compat_8800dc.o  \
+	aicwf_compat_8800d80.o  \
 
 $(MODULE_NAME)-$(CONFIG_BR_SUPPORT)       += aic_br_ext.o
 $(MODULE_NAME)-$(CONFIG_RWNX_RADAR)       += rwnx_radar.o
@@ -170,7 +175,7 @@ $(MODULE_NAME)-$(CONFIG_USB_SUPPORT)     += usb_host.o
 $(MODULE_NAME)-$(CONFIG_USB_SUPPORT)     += aicwf_txrxif.o
 $(MODULE_NAME)-$(CONFIG_USB_SUPPORT)     += aicwf_usb.o
 $(MODULE_NAME)-$(CONFIG_USE_WIRELESS_EXT)	 += aicwf_wext_linux.o
-
+$(MODULE_NAME)-$(CONFIG_GKI)    += rwnx_gki.o
 
 ccflags-$(CONFIG_DEBUG_FS) += -DCONFIG_RWNX_DEBUGFS
 ccflags-$(CONFIG_DEBUG_FS) += -DCONFIG_RWNX_UM_HELPER_DFLT=\"$(CONFIG_RWNX_UM_HELPER_DFLT)\"
@@ -278,6 +283,7 @@ ccflags-$(CONFIG_SUPPORT_REALTIME_CHANGE_MAC) += -DCONFIG_SUPPORT_REALTIME_CHANG
 ccflags-$(CONFIG_SET_VENDOR_EXTENSION_IE) += -DCONFIG_SET_VENDOR_EXTENSION_IE
 ccflags-$(CONFIG_FWLOG_EN) += -DCONFIG_FWLOG_EN
 ccflags-$(CONFIG_FOR_IPCAM) += -DCONFIG_FOR_IPCAM
+ccflags-$(CONFIG_5M10M) += -DCONFIG_5M10M
 ccflags-$(CONFIG_USE_FW_REQUEST) += -DCONFIG_USE_FW_REQUEST
 ccflags-$(CONFIG_USE_P2P0) += -DCONFIG_USE_P2P0
 ccflags-$(CONFIG_ONE_TXQ)  += -DCONFIG_ONE_TXQ
@@ -285,6 +291,10 @@ ccflags-$(CONFIG_PER_STA_FC)  += -DCONFIG_PER_STA_FC
 ccflags-$(CONFIG_PREALLOC_RX_SKB) += -DCONFIG_PREALLOC_RX_SKB
 ccflags-$(CONFIG_PREALLOC_TXQ) += -DCONFIG_PREALLOC_TXQ
 ccflags-$(CONFIG_USE_WIRELESS_EXT) += -DCONFIG_USE_WIRELESS_EXT
+ccflags-$(CONFIG_DPD) += -DCONFIG_DPD
+ccflags-$(CONFIG_FORCE_DPD_CALIB) += -DCONFIG_FORCE_DPD_CALIB -DCONFIG_DPD
+ccflags-$(CONFIG_GKI) += -DCONFIG_GKI
+ccflags-$(CONFIG_SCHED_SCAN) += -DCONFIG_SCHED_SCAN
 
 # Platform support list
 CONFIG_PLATFORM_ROCKCHIP ?= n
@@ -361,5 +371,5 @@ uninstall:
 	/sbin/depmod -a ${KVER}
 
 clean:
-	rm -rf *.o *.ko *.o.* *.mod.* modules.* Module.* .a* .o* .*.o.* *.mod .tmp* .cache.mk
+	rm -rf *.o *.ko *.o.* *.mod.* modules.* Module.* .a* .o* .*.o.* *.mod .tmp* .cache.mk .modules.order.cmd .Module.symvers.cmd
 

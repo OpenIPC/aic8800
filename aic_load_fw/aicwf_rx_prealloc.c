@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/version.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -10,9 +9,9 @@
 #ifdef CONFIG_PREALLOC_RX_SKB
 struct aicwf_rx_buff_list aic_rx_buff_list;
 
-int aic_rxbuff_num_max = 100;
+int aic_rxbuff_num_max = 1000;
 
-int aic_rxbuff_size = (4 * 512);
+int aic_rxbuff_size = (4 * 512) * 10;
 
 int rx_buff_list_ava = 0;
 

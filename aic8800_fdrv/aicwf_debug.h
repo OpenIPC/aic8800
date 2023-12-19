@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 
 
 #define RWNX_FN_ENTRY_STR ">>> %s()\n", __func__

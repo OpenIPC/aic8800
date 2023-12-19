@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/etherdevice.h>
 #include <linux/netdevice.h>
 #include <net/netlink.h>
@@ -921,7 +920,7 @@ static int aicwf_get_wap(struct net_device *dev,
 }
 
 
-
+extern uint8_t scanning;
 static int aicwf_set_scan(struct net_device *dev, struct iw_request_info *a,
 			   union iwreq_data *wrqu, char *extra)
 {
@@ -939,6 +938,14 @@ static int aicwf_set_scan(struct net_device *dev, struct iw_request_info *a,
 		printk("aic_wiphy error \r\n");
 
 	}
+
+    if (rwnx_hw->wext_scan || scanning) {
+        AICWFDBG(LOGINFO, "is scanning, abort\n");
+	ret =  rwnx_send_scanu_cancel_req(rwnx_hw, NULL);
+	if (ret)
+            return ret;
+	msleep(150);
+    }
 	
 	rwnx_hw->wext_scan = 1;
 
@@ -985,7 +992,6 @@ static int aicwf_get_scan(struct net_device *dev, struct iw_request_info *a,
 	char *stop = start + wrqu->data.length;
 	
 	AICWFDBG(LOGDEBUG, "%s Enter %p %p len:%d \r\n", __func__, start, stop, wrqu->data.length);
-	
 
 	//TODO: spinlock
 	list_for_each_entry_safe(scan_re, tmp, &rwnx_hw->wext_scanre_list, scanu_re_list) {

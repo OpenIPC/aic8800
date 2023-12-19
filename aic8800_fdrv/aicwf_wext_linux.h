@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 
 struct scanu_result_wext{
 	struct list_head scanu_re_list;

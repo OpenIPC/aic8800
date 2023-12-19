@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
  ******************************************************************************
  *
@@ -203,7 +202,9 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
 
 		kfree(cmd->a2e_msg);
     } else {
-		WAKE_CMD_WORK(cmd_mgr);
+        if(cmd_mgr->queue_sz <= 1){
+		    WAKE_CMD_WORK(cmd_mgr);
+        }
 		return 0;
 	}
 
@@ -229,7 +230,7 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
 
             cmd_dump(cmd);
             spin_lock_bh(&cmd_mgr->lock);
-            //AIDEN workaround 
+            
             cmd_mgr->state = RWNX_CMD_MGR_STATE_CRASHED;
             if (!(cmd->flags & RWNX_CMD_FLAG_DONE)) {
                 cmd->result = -ETIMEDOUT;

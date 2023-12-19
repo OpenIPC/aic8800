@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
  * aicwf_usb.c
  *
@@ -24,16 +23,18 @@
 #include "aic_txrxif.h"
 #include "aicwf_usb.h"
 #include "aicbluetooth.h"
+#include "aicwf_debug.h"
+#include "aic_compat_8800d80.h"
 
 #define JUMP_TABLE_BASE   0x161928
 #define JUMP_TABLE_OFFSET(i) ((u32)(JUMP_TABLE_BASE+(i)*4))
-#define CHIP_REV_U02        0x3
-#define CHIP_REV_U03        0x7
-#define CHIP_SUB_REV_U04    0x20
 extern int adap_test;
 extern int testmode;
 extern unsigned char paringid[100];
 extern int ble_scan_wakeup_reboot_time;
+extern uint32_t ad_data_filter_mask;
+extern uint32_t gpio_num;//default select gpiob2 for fw_wakeup_host
+extern uint32_t gpio_dft_lvl;//0:defalut pull down,  1:default pull up
 u8 chip_id = 0;
 u8 chip_sub_id = 0;
 int fw_loaded = 0;
@@ -666,6 +667,7 @@ static void aicwf_usb_deinit(struct aic_usb_dev *usbdev)
     cancel_work_sync(&usbdev->rx_urb_work);
     aicwf_usb_free_urb(&usbdev->rx_free_list, &usbdev->rx_free_lock);
     aicwf_usb_free_urb(&usbdev->tx_free_list, &usbdev->tx_free_lock);
+	aicwf_usb_free_urb(&usbdev->tx_post_list, &usbdev->tx_post_lock);
     usb_free_urb(usbdev->msg_out_urb);
 }
 
@@ -817,7 +819,9 @@ static int aicwf_parse_usb(struct aic_usb_dev *usb_dev, struct usb_interface *in
     }
 
 #ifdef CONFIG_USB_MSG_EP
-	if ( usb_dev->msg_out_pipe != 0 && pid == USB_DEVICE_ID_AIC_8801){
+	if ( usb_dev->msg_out_pipe != 0 &&
+        (usb_dev->chipid == PRODUCT_ID_AIC8801 || 
+        usb_dev->chipid == PRODUCT_ID_AIC8800D81)){
 		printk("TX Msg Bulk EP found\n");
 		usb_dev->use_msg_ep = 1;
 	}else{
@@ -1067,9 +1071,7 @@ u32 rf_tbl_masked[][3] = {
 	{0x40344058, 0x00800000, 0x00000000},// pll trx
 };
 
-
-static int system_config(struct aic_usb_dev *usb_dev)
-{
+static int system_config_8800(struct aic_usb_dev *usb_dev){
     int syscfg_num;
     int ret, cnt;
     const u32 mem_addr = 0x40500000;
@@ -1119,6 +1121,18 @@ static int system_config(struct aic_usb_dev *usb_dev)
         }
     }
     return 0;
+
+}
+
+static int system_config(struct aic_usb_dev *usb_dev)
+{
+    if(usb_dev->chipid == PRODUCT_ID_AIC8800){
+        return system_config_8800(usb_dev);
+    }else if(usb_dev->chipid == PRODUCT_ID_AIC8800D80){
+        return system_config_8800d80(usb_dev);
+    }else{
+        return -1;
+    }
 }
 
 
@@ -1179,17 +1193,18 @@ static int patch_config(struct aic_usb_dev *usb_dev)
 
 		//if (testmode == FW_NORMAL_MODE) {
 	        if((ret = rwnx_send_dbg_mem_write_req(usb_dev, 0x1e5318, patch_addr))) {
-	            printk("%x write fail\n", 0x1e4d80);
+	            printk("%x write fail\n", 0x1e5318);
 	        }
+            
 			if(adap_test){
 				printk("%s for adaptivity test \r\n", __func__);
 				adap_patch_num = sizeof(adaptivity_patch_tbl)/4;
-		        if((ret = rwnx_send_dbg_mem_write_req(usb_dev, 0x1e4d84, patch_num + adap_patch_num))) {
-		            printk("%x write fail\n", 0x1e4d84);
+		        if((ret = rwnx_send_dbg_mem_write_req(usb_dev, 0x1e531c, patch_num + adap_patch_num))) {
+		            printk("%x write fail\n", 0x1e531c);
 		        }
 			}else{
 		        if((ret = rwnx_send_dbg_mem_write_req(usb_dev, 0x1e531c, patch_num))) {
-		            printk("%x write fail\n", 0x1e4d84);
+		            printk("%x write fail\n", 0x1e531c);
 		        }
 			}
 		//}else if(testmode == FW_TEST_MODE){//for old rf fw
@@ -1301,6 +1316,234 @@ static int get_paring_ids(char* c_paringids, int* i_paringids){
 	return paring_id_num;
 }
 
+static int aicloadfw_chipmatch(struct aic_usb_dev *usb_dev, u16 vid, u16 pid){
+
+    if(pid == USB_DEVICE_ID_AIC){
+        usb_dev->chipid = PRODUCT_ID_AIC8800;
+		AICWFDBG(LOGINFO, "%s USE AIC8800\r\n", __func__);
+		return 0;
+	}else if(pid == USB_DEVICE_ID_AIC_8801){
+		usb_dev->chipid = PRODUCT_ID_AIC8801;
+		AICWFDBG(LOGINFO, "%s USE AIC8801\r\n", __func__);
+		return 0;
+	}else if(pid == USB_DEVICE_ID_AIC_8800D80){
+		usb_dev->chipid = PRODUCT_ID_AIC8800D80;
+		AICWFDBG(LOGINFO, "%s USE AIC8800D80\r\n", __func__);
+		return 0;
+	}else if(pid == USB_DEVICE_ID_AIC_8800D81){
+        usb_dev->chipid = PRODUCT_ID_AIC8800D81;
+		AICWFDBG(LOGINFO, "%s USE AIC8800D81\r\n", __func__);
+        return 0;
+    }else{
+        return -1;
+    }
+}
+
+int aicfw_download_fw_8800(struct aic_usb_dev *usb_dev){
+    //uint32_t paring_id = 0;
+	uint32_t* paring_ids;
+	int paring_id_num = 0;
+	int i = 0;
+    const u32 fw_addr = RAM_FW_ADDR;
+    
+#ifdef CONFIG_M2D_OTA_AUTO_SUPPORT
+        if(testmode == FW_M2D_OTA_MODE){
+            rwnx_plat_m2d_flash_ota_android(usb_dev,FW_M2D_OTA_NAME);
+        }else if(testmode == FW_NORMAL_MODE) {
+            rwnx_plat_m2d_flash_ota_check(usb_dev,FW_M2D_OTA_NAME);
+        }
+#endif
+        if(testmode == FW_TEST_MODE){
+            if (rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_ADDR, FW_RF_BASE_NAME)) {
+                return -1;
+            }
+    
+            if (chip_id == CHIP_REV_U03) {
+                if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_ADID_BASE_NAME_U03)) {
+                    return -1;;
+                }
+    
+                if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR_U03, FW_PATCH_BASE_NAME_U03)) {
+                    return -1;;
+                }
+            } else {
+                if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_ADID_BASE_NAME)) {
+                    return -1;;
+                }
+    
+                if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR, FW_PATCH_BASE_NAME)) {
+                    return -1;;
+                }
+            }
+    
+#if 0
+            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_RF_ADID_BASE_NAME)) {
+                goto out_free_bus;
+            }
+    
+            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR, FW_RF_PATCH_BASE_NAME)) {
+                goto out_free_bus;
+            }
+#endif
+        } else if(testmode == FW_BLE_SCAN_WAKEUP_MODE){
+#if 0
+            paring_id = rwnx_atoli(paringid);
+            rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, FW_BLE_SCAN_WAKEUP_NAME);
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF00, 0x53454C42);//magic_num
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF04, ble_scan_wakeup_reboot_time);//reboot time
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF08, paring_id);
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF0c, paring_id);
+            rwnx_send_dbg_start_app_req(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, HOST_START_APP_AUTO);
+#endif
+#if 1
+            paring_ids = (uint32_t*)kmalloc(sizeof(uint32_t) * 8, GFP_KERNEL);
+            rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, FW_BLE_SCAN_WAKEUP_NAME);
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF00, 0x53454C42);//magic_num
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF04, ble_scan_wakeup_reboot_time);//reboot time
+            paring_id_num = get_paring_ids(paringid, paring_ids);
+            for(i = 0; i < paring_id_num; i++){
+                printk("paring_ids[%d]:0x%X \r\n", i, paring_ids[i]);
+                rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF08 + (4 * i), paring_ids[i]);
+            }
+            rwnx_send_dbg_start_app_req(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, HOST_START_APP_AUTO);
+            kfree(paring_ids);
+#endif
+            return -1;
+
+        } else if(testmode == FW_BLE_SCAN_AD_FILTER_MODE){
+/*
+            data and ad_data_filter_mask instructions for use
+            ex.
+            data[18] = {0x46,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0x30,0xff,0xff,0xff,0x43,0x52,0x45,0x4c,0x42};
+            mask = 1100 0000 0111 1111 1100 0000 0000 0000 = 0xc07fc000
+
+            data  = 0x46,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0x30,0xff,0xff,0xff,0x43,0x52,0x45,0x4c,0x42
+            mask =  1      1       0     0     0    0     0     0    0     1      1     1    1    1      1      1      1      1      0     0...... fill 0
+
+            data & mask = "0x46 0x00" 0x00 0x00 0x00 0x00 0x00 0x00 0x00 "0x30 0xff 0xff 0x43 0x52 0x45 0x4c 0x42"
+            using data & mask value condition to wakeup host_wake_bt gpio
+*/
+            struct wakeup_ad_data_filter* ad_data_filter = (struct wakeup_ad_data_filter*)kmalloc(MAX_AD_FILTER_NUM*sizeof(struct wakeup_ad_data_filter), GFP_KERNEL);
+            uint32_t *write_blocks = (uint32_t *)ad_data_filter;
+            
+            printk("%s ble scan wakeup \r\n", __func__);
+
+            memset(ad_data_filter, 0, MAX_AD_FILTER_NUM*sizeof(struct wakeup_ad_data_filter));
+            rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, FW_BLE_SCAN_AD_FILTER_NAME);
+
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF00, 0x53454C42);//magic_num
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF04, ble_scan_wakeup_reboot_time);//reboot time
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF08, gpio_num);////default select gpiob2 for fw_wakeup_host
+            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF0c, gpio_dft_lvl);////0:defalut pull down,  1:default pull up+            /********************************************************************/
+            //MAX_AD_FILTER_NUM=3 :num 0
+            {
+                const uint8_t data[11] = {0x59,0x4B,0x32,0x42,0x41,0x5F,0x54,0x45,0x53,0x54,0x33};
+                ad_data_filter[0].ad_len = 12;
+                ad_data_filter[0].ad_type = 0x09;
+                memcpy(ad_data_filter[0].ad_data, data,ad_data_filter[0].ad_len-1);// 1111 1111 1110 0000 0000 0000 0000 0000 //0xffe00000
+                ad_data_filter[0].ad_data_mask = 0xffe00000;
+                ad_data_filter[0].ad_role = ROLE_COMBO;
+            }
+            /********************************************************************/
+            //MAX_AD_FILTER_NUM=3 :num 1
+            {
+                const uint8_t data[2] = {0x12,0x18};
+                ad_data_filter[1].ad_len = 3;
+                ad_data_filter[1].ad_type = 0x3;
+                memcpy(ad_data_filter[1].ad_data, data,ad_data_filter[1].ad_len-1);// 1100 0000 0000 0000 0000 0000 0000 0000 //0xc0000000
+                ad_data_filter[1].ad_data_mask = 0xc0000000;
+                ad_data_filter[1].ad_role = ROLE_COMBO;
+            }
+            /********************************************************************/
+            //MAX_AD_FILTER_NUM=3 :num 2
+            {
+                //const uint8_t data[11] = {0x59,0x4B,0x32,0x42,0x41,0x5F,0x54,0x45,0x53,0x54,0x33};
+                ad_data_filter[2].ad_len = 0;
+                ad_data_filter[2].ad_type = 0;
+                //memcpy(ad_data_filter[2].ad_data, data,ad_data_filter[2].ad_len-1);// 1100 0000 0111 1111 1100 0000 0000 0000 //0xc07fc000
+                ad_data_filter[2].ad_data_mask = 0;
+                ad_data_filter[2].ad_role = ROLE_COMBO;
+            }
+
+            for(i = 0; i < ((MAX_AD_FILTER_NUM*sizeof(struct wakeup_ad_data_filter))/4 +1); i++){
+                printk("write_blocks[%d]:0x%08X \r\n", i, write_blocks[i]);
+                rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF10 + (4 * i), write_blocks[i]);
+            }
+            rwnx_send_dbg_start_app_req(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, HOST_START_APP_AUTO);
+            kfree(ad_data_filter);
+
+            return -1;
+        }else {
+            if (rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_ADDR, FW_BASE_NAME)) {
+                return -1;;
+            }
+            if (chip_id == CHIP_REV_U03) {
+                if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_ADID_BASE_NAME_U03)) {
+                    return -1;;
+                }
+    
+                if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR_U03, FW_PATCH_BASE_NAME_U03)) {
+                    return -1;;
+                }
+            } else {
+                if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_ADID_BASE_NAME)) {
+                    return -1;;
+                }
+    
+                if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR, FW_PATCH_BASE_NAME)) {
+                    return -1;;
+                }
+            }
+        }
+        if (chip_id == CHIP_REV_U03) {
+            if (rwnx_plat_bin_fw_patch_table_upload_android(usb_dev, FW_PATCH_TABLE_NAME_U03)) {
+                return -1;;
+            }
+        } else {
+            if (rwnx_plat_bin_fw_patch_table_upload_android(usb_dev, FW_PATCH_TABLE_NAME)) {
+                return -1;;
+            }
+        }
+    
+#if 0
+        if(testmode == FW_TEST_MODE){
+            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_PATCH_TEST_BASE_ADDR, FW_PATCH_TEST_BASE_NAME)) {
+                goto out_free_bus;
+            }
+        }
+#endif
+    
+        if (rwnx_plat_userconfig_upload_android(usb_dev, FW_USERCONFIG_NAME)){
+            return -1;
+        }
+    
+        if (patch_config(usb_dev)) {
+            return -1;;
+        }
+    
+        if (rf_config(usb_dev)){
+            return -1;;
+        }
+        if (rwnx_send_dbg_start_app_req(usb_dev, fw_addr, HOST_START_APP_AUTO)) {
+            return -1;
+        }
+        
+    return 0;
+}
+
+
+int aicfw_download_fw(struct aic_usb_dev *usb_dev)
+{
+    if(usb_dev->chipid == PRODUCT_ID_AIC8800){
+        return aicfw_download_fw_8800(usb_dev);
+    }else if(usb_dev->chipid == PRODUCT_ID_AIC8800D80){
+        return aicfw_download_fw_8800d80(usb_dev);
+    }else{
+        return -1;
+    }
+}
+
+
 static int aicwf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
     int ret = 0;
@@ -1309,20 +1552,18 @@ static int aicwf_usb_probe(struct usb_interface *intf, const struct usb_device_i
     struct device *dev = NULL;
     struct aicwf_rx_priv* rx_priv = NULL;
     struct aic_usb_dev *usb_dev = NULL;
-    const u32 fw_addr = RAM_FW_ADDR;
-	//uint32_t paring_id = 0;
-	uint32_t* paring_ids;
-	int paring_id_num = 0;
-	int i = 0;
+    
 
-	printk("%s vid:0x%X pid:0x%X icl:0x%X isc:0x%X ipr:0x%X \r\n", __func__,
+	AICWFDBG(LOGINFO, "%s vid:0x%X pid:0x%X icl:0x%X isc:0x%X ipr:0x%X \r\n", __func__,
 		id->idVendor,
 		id->idProduct,
 		id->bInterfaceClass,
 		id->bInterfaceSubClass,
 		id->bInterfaceProtocol);
 
-	if(fw_loaded == 1 && id->idProduct == USB_DEVICE_ID_AIC_8801){
+	if(fw_loaded == 1 && 
+        (id->idProduct == USB_DEVICE_ID_AIC_8801 || 
+        id->idProduct == USB_DEVICE_ID_AIC_8800D81)){
 		return -1;
 	}
 
@@ -1333,6 +1574,12 @@ static int aicwf_usb_probe(struct usb_interface *intf, const struct usb_device_i
 
     usb_dev->udev = usb;
     usb_dev->dev = &usb->dev;
+    ret = aicloadfw_chipmatch(usb_dev, id->idVendor, id->idProduct);
+    if (ret) {
+        AICWFDBG(LOGERROR, "%s chip unsupport.\r\n", __func__);
+        goto out_free;
+    }
+    
     usb_set_intfdata(intf, usb_dev);
 
     ret = aicwf_parse_usb(usb_dev, intf, id->idProduct);
@@ -1389,7 +1636,9 @@ static int aicwf_usb_probe(struct usb_interface *intf, const struct usb_device_i
         goto out_free_bus;
     }
 
-	if(fw_loaded == 0 && id->idProduct == USB_DEVICE_ID_AIC_8801){
+	if(fw_loaded == 0 && 
+        (usb_dev->chipid == PRODUCT_ID_AIC8801 || 
+        usb_dev->chipid == PRODUCT_ID_AIC8800D81)){
 		rwnx_send_reboot(usb_dev);
 		goto out_free_bus;
 	}
@@ -1397,137 +1646,19 @@ static int aicwf_usb_probe(struct usb_interface *intf, const struct usb_device_i
     if (system_config(usb_dev)) {
         goto out_free_bus;
     }
-#ifdef CONFIG_M2D_OTA_AUTO_SUPPORT
-	if(testmode == FW_M2D_OTA_MODE){
-		rwnx_plat_m2d_flash_ota_android(usb_dev,FW_M2D_OTA_NAME);
-	}else if(testmode == FW_NORMAL_MODE) {
-		rwnx_plat_m2d_flash_ota_check(usb_dev,FW_M2D_OTA_NAME);
-	}
-#endif
-    if(testmode == FW_TEST_MODE){
-        if (rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_ADDR, FW_RF_BASE_NAME)) {
-            goto out_free_bus;
-        }
 
-        if (chip_id == CHIP_REV_U03) {
-            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_ADID_BASE_NAME_U03)) {
-                goto out_free_bus;
-            }
-
-            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR_U03, FW_PATCH_BASE_NAME_U03)) {
-                goto out_free_bus;
-            }
-        } else {
-            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_ADID_BASE_NAME)) {
-                goto out_free_bus;
-            }
-
-            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR, FW_PATCH_BASE_NAME)) {
-                goto out_free_bus;
-            }
-        }
-
-#if 0
-        if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_RF_ADID_BASE_NAME)) {
-            goto out_free_bus;
-        }
-
-        if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR, FW_RF_PATCH_BASE_NAME)) {
-            goto out_free_bus;
-        }
-#endif
-    } else if(testmode == FW_BLE_SCAN_WAKEUP_MODE){
-#if 0
-		paring_id = rwnx_atoli(paringid);
-		rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, FW_BLE_SCAN_WAKEUP_NAME);
-		rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF00, 0x53454C42);//magic_num
-		rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF04, ble_scan_wakeup_reboot_time);//reboot time
-		rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF08, paring_id);
-		rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF0c, paring_id);
-		rwnx_send_dbg_start_app_req(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, HOST_START_APP_AUTO);
-#endif
-#if 1
-		paring_ids = (uint32_t*)kmalloc(sizeof(uint32_t) * 8, GFP_KERNEL);
-		rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, FW_BLE_SCAN_WAKEUP_NAME);
-		rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF00, 0x53454C42);//magic_num
-		rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF04, ble_scan_wakeup_reboot_time);//reboot time
-		paring_id_num = get_paring_ids(paringid, paring_ids);
-		for(i = 0; i < paring_id_num; i++){
-			printk("paring_ids[%d]:0x%X \r\n", i, paring_ids[i]);
-			rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF08 + (4 * i), paring_ids[i]);
-		}
-		rwnx_send_dbg_start_app_req(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, HOST_START_APP_AUTO);
-		kfree(paring_ids);
-#endif
-		goto out_free_bus;
-	}  else {
-#if defined(CONFIG_PLATFORM_UBUNTU)
-        if (rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_ADDR, FW_BASE_NAME_PC)) {
-            goto out_free_bus;
-        }
-#else
-        if (rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_ADDR, FW_BASE_NAME)) {
-            goto out_free_bus;
-        }
-#endif
-        if (chip_id == CHIP_REV_U03) {
-            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_ADID_BASE_NAME_U03)) {
-                goto out_free_bus;
-            }
-
-            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR_U03, FW_PATCH_BASE_NAME_U03)) {
-                goto out_free_bus;
-            }
-        } else {
-            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_ADID_BASE_ADDR, FW_ADID_BASE_NAME)) {
-                goto out_free_bus;
-            }
-
-            if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_RAM_PATCH_BASE_ADDR, FW_PATCH_BASE_NAME)) {
-                goto out_free_bus;
-            }
-        }
-    }
-    if (chip_id == CHIP_REV_U03) {
-        if (rwnx_plat_bin_fw_patch_table_upload_android(usb_dev, FW_PATCH_TABLE_NAME_U03)) {
-            goto out_free_bus;
-        }
-    } else {
-        if (rwnx_plat_bin_fw_patch_table_upload_android(usb_dev, FW_PATCH_TABLE_NAME)) {
-            goto out_free_bus;
-        }
-    }
-
-#if 0
-    if(testmode == FW_TEST_MODE){
-        if(rwnx_plat_bin_fw_upload_android(usb_dev, FW_PATCH_TEST_BASE_ADDR, FW_PATCH_TEST_BASE_NAME)) {
-            goto out_free_bus;
-        }
-    }
-#endif
-
-    if (rwnx_plat_userconfig_upload_android(FW_USERCONFIG_NAME)){
+    if (aicfw_download_fw(usb_dev)){
         goto out_free_bus;
     }
-
-    if (patch_config(usb_dev)) {
-        goto out_free_bus;
-    }
-
-	if (rf_config(usb_dev)){
-		goto out_free_bus;
-	}
-
-    if ((ret = rwnx_send_dbg_start_app_req(usb_dev, fw_addr, HOST_START_APP_AUTO))) {
-        return -1;
-    }
+    
     usb_dev->app_cmp = true;
 	fw_loaded = 1;
 
     return 0;
 
 out_free_bus:
-    aicwf_bus_deinit(dev);
+	aicwf_bus_deinit(dev);
+	aicwf_rx_deinit(usb_dev->rx_priv);
     kfree(bus_if);
 out_free_usb:
     aicwf_usb_deinit(usb_dev);
@@ -1555,7 +1686,7 @@ static void aicwf_usb_disconnect(struct usb_interface *intf)
     kfree(usb_dev->bus_if);
     kfree(usb_dev);
 }
-
+#if 0
 static int aicwf_usb_suspend(struct usb_interface *intf, pm_message_t state)
 {
     struct aic_usb_dev *usb_dev =
@@ -1582,10 +1713,12 @@ static int aicwf_usb_reset_resume(struct usb_interface *intf)
 {
     return aicwf_usb_resume(intf);
 }
-
+#endif
 static struct usb_device_id aicwf_usb_id_table[] = {
     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC)},
     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8801)},
+    {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D80)},
+    {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D81)},
     {}
 };
 
@@ -1596,9 +1729,9 @@ static struct usb_driver aicwf_usbdrvr = {
     .probe = aicwf_usb_probe,
     .disconnect = aicwf_usb_disconnect,
     .id_table = aicwf_usb_id_table,
-    .suspend = aicwf_usb_suspend,
-    .resume = aicwf_usb_resume,
-    .reset_resume = aicwf_usb_reset_resume,
+    //.suspend = aicwf_usb_suspend,
+    //.resume = aicwf_usb_resume,
+    //.reset_resume = aicwf_usb_reset_resume,
     .supports_autosuspend = 0,
     .disable_hub_initiated_lpm = 1,
 };
