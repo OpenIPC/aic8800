@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-
 CONFIG_USB_SUPPORT =y
 CONFIG_RFTEST =y
 CONFIG_USB_BT =y
@@ -43,6 +41,7 @@ $(MODULE_NAME)-y := 	aic_bluetooth_main.o \
 					aicwf_usb.o \
 					aic_txrxif.o \
 					aicbluetooth_cmds.o \
+					aic_compat_8800d80.o \
 					md5.o
 
 $(MODULE_NAME)-$(CONFIG_PREALLOC_RX_SKB)	 += aicwf_rx_prealloc.o
@@ -103,4 +102,4 @@ uninstall:
 	/sbin/depmod -a ${KVER}
 
 clean:
-	rm -rf *.o *.ko *.o.* *.mod.* modules.* Module.* .a* .o* .*.o.* *.mod .tmp* .cache.mk
+	rm -rf *.o *.ko *.o.* *.mod.* modules.* Module.* .a* .o* .*.o.* *.mod .tmp* .cache.mk .modules.order.cmd .Module.symvers.cmd

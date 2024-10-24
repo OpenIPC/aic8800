@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
  * aicwf_usb.h
  *
@@ -23,7 +22,22 @@
 /* USB Device ID */
 #define USB_VENDOR_ID_AIC               0xA69C
 #define USB_DEVICE_ID_AIC               0x8800
-#define USB_DEVICE_ID_AIC_8801		0x8801
+#define USB_DEVICE_ID_AIC_8801		    0x8801
+
+#define CHIP_REV_U01        0x1
+#define CHIP_REV_U02        0x3
+#define CHIP_REV_U03        0x7
+#define CHIP_SUB_REV_U04    0x20
+
+enum AICWF_IC{
+    PRODUCT_ID_AIC8800 =   0,
+	PRODUCT_ID_AIC8801,
+	PRODUCT_ID_AIC8800DC,
+	PRODUCT_ID_AIC8800DW,
+	PRODUCT_ID_AIC8800D80,
+	PRODUCT_ID_AIC8800D81,
+};
+
 
 #define AICWF_USB_RX_URBS               (20)
 #define AICWF_USB_TX_URBS               (100)
@@ -39,6 +53,8 @@
 #define FW_ADID_BASE_NAME               "fw_adid.bin"
 #define FW_BASE_NAME                    "fmacfw.bin"
 #define FW_BLE_SCAN_WAKEUP_NAME         "fw_ble_scan.bin"
+#define FW_BLE_SCAN_AD_FILTER_NAME      "fw_ble_scan_ad_filter.bin"
+
 #define FW_PATCH_BASE_NAME_PC           "fw_patch.bin"
 #define FW_ADID_BASE_NAME_PC            "fw_adid.bin"
 #define FW_BASE_NAME_PC                 "fmacfw.bin"
@@ -60,6 +76,8 @@
 #define FW_USERCONFIG_NAME              "aic_userconfig.txt"
 #define FW_M2D_OTA_NAME                 "m2d_ota.bin"
 
+   /*8800 use 0x100000, 8800D80 use 0x160000*/
+#define RAM_FW_BLE_SCAN_WAKEUP_ADDR_8800D80		0x00160000
 #define RAM_FW_BLE_SCAN_WAKEUP_ADDR		0x00100000
 #define RAM_FW_ADDR                     0x00110000
 #define FW_RAM_ADID_BASE_ADDR           0x00161928
@@ -72,6 +90,8 @@ enum {
     FW_TEST_MODE,
     FW_BLE_SCAN_WAKEUP_MODE,
     FW_M2D_OTA_MODE,
+    FW_DPDCALIB_MODE,
+    FW_BLE_SCAN_AD_FILTER_MODE,
 };
 
 
@@ -92,6 +112,21 @@ enum aicwf_usb_state {
     USB_DOWN_ST,
     USB_UP_ST,
     USB_SLEEP_ST
+};
+
+#define MAX_AD_FILTER_NUM    3
+enum ad_role_type {
+    ROLE_ONLY,// ROLE_ONLY will trigger wake up immediately.
+    ROLE_COMBO,//ROLE_COMBO will trigger When all the conditions (ad_role == ROLE_COMBO,and ad_filter is matching)are met.
+};
+
+
+struct wakeup_ad_data_filter {
+    uint32_t ad_data_mask;
+    uint8_t ad_role;//from enum ad_role_type 
+    uint8_t ad_len;
+    uint8_t ad_type;
+    uint8_t ad_data[31];
 };
 
 struct aicwf_usb_buf {
@@ -146,7 +181,8 @@ struct aic_usb_dev {
     #ifdef CONFIG_USB_NO_TRANS_DMA_MAP
     dma_addr_t cmd_dma_trans_addr;
     #endif
-
+    
+    u16 chipid;
     bool tbusy;
     bool app_cmp;
 };

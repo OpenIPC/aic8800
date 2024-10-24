@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
  ****************************************************************************************
  *
@@ -26,7 +25,7 @@
 #include "rwnx_events.h"
 #include "rwnx_compat.h"
 #include "aicwf_txrxif.h"
-#ifdef CONFIG_USB_WIRELESS_EXT
+#ifdef CONFIG_USE_WIRELESS_EXT
 #include "aicwf_wext_linux.h"
 #endif
 
@@ -296,7 +295,9 @@ found_vif:
     if (ps_state == MM_PS_MODE_OFF) {
         // Start TX queues for provided VIF
         rwnx_txq_vif_start(vif_entry, RWNX_TXQ_STOP_VIF_PS, rwnx_hw);
-    }
+		tasklet_schedule(&rwnx_hw->task);
+	}   
+        
     else {
         // Stop TX queues for provided VIF
         rwnx_txq_vif_stop(vif_entry, RWNX_TXQ_STOP_VIF_PS, rwnx_hw);
@@ -616,7 +617,10 @@ static inline int rwnx_rx_scanu_start_cfm(struct rwnx_hw *rwnx_hw,
     RWNX_DBG(RWNX_FN_ENTRY_STR);
 
     if (rwnx_hw->scan_request 
-#ifdef CONFIG_USB_WIRELESS_EXT
+#ifdef CONFIG_SCHED_SCAN
+        && !rwnx_hw->is_sched_scan
+#endif//CONFIG_SCHED_SCAN
+#ifdef CONFIG_USE_WIRELESS_EXT
 		&& !rwnx_hw->wext_scan) {
 #else
 		){
@@ -631,7 +635,7 @@ static inline int rwnx_rx_scanu_start_cfm(struct rwnx_hw *rwnx_hw,
     } 
 
 
-#ifdef CONFIG_USB_WIRELESS_EXT
+#ifdef CONFIG_USE_WIRELESS_EXT
 	else if(rwnx_hw->wext_scan){
     	rwnx_hw->wext_scan = 0;
 		AICWFDBG(LOGDEBUG, "%s rwnx_hw->wext_scan done!!\r\n", __func__);
@@ -644,6 +648,21 @@ static inline int rwnx_rx_scanu_start_cfm(struct rwnx_hw *rwnx_hw,
 	else {
         AICWFDBG(LOGERROR, "%s rwnx_hw->scan_request is NULL!!\r\n", __func__);
     }
+    
+#ifdef CONFIG_SCHED_SCAN
+        if(rwnx_hw->is_sched_scan){
+    
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
+            AICWFDBG(LOGINFO, "%s cfg80211_sched_scan_results \r\n", __func__);
+            cfg80211_sched_scan_results(rwnx_hw->scan_request->wiphy, 
+                    rwnx_hw->sched_scan_req->reqid);
+#else
+            cfg80211_sched_scan_results(rwnx_hw->sched_scan_req->wiphy);
+#endif  
+            kfree(rwnx_hw->scan_request);
+            rwnx_hw->is_sched_scan = false;
+        }
+#endif//CONFIG_SCHED_SCAN
 
     rwnx_hw->scan_request = NULL;
     scanning = 0;
@@ -659,13 +678,15 @@ static inline int rwnx_rx_scanu_result_ind(struct rwnx_hw *rwnx_hw,
     struct ieee80211_channel *chan;
     struct scanu_result_ind *ind = (struct scanu_result_ind *)msg->param;
     struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)ind->payload;
-	
+
+#if 0    
 	const u8 *ie = mgmt->u.beacon.variable;
 	char *ssid = NULL;
 	int ssid_len = 0;
 	int freq = 0;
-	
-#ifdef CONFIG_USB_WIRELESS_EXT
+#endif
+
+#ifdef CONFIG_USE_WIRELESS_EXT
 	struct scanu_result_wext *scan_re_wext;
 #endif
 
@@ -689,22 +710,29 @@ static inline int rwnx_rx_scanu_result_ind(struct rwnx_hw *rwnx_hw,
         bss = cfg80211_inform_bss_frame(rwnx_hw->wiphy, chan,
                                         (struct ieee80211_mgmt *)ind->payload,
                                         ind->length, ind->rssi * 100, GFP_ATOMIC);
+#if 0
+        //print scan result info start
+        if(ie != NULL){
+            ssid_len = ie[1];
+            ssid = (char *)vmalloc(sizeof(char)* (ssid_len + 1));
+            if(ssid != NULL){
+                memset(ssid, 0, ssid_len + 1);
+                memcpy(ssid, &ie[2], ssid_len);
+                freq = ind->center_freq;
+                AICWFDBG(LOGDEBUG, "%s %02x:%02x:%02x:%02x:%02x:%02x ssid:%s freq:%d timestamp:%ld\r\n", __func__, 
+                    bss->bssid[0],bss->bssid[1],bss->bssid[2],
+                    bss->bssid[3],bss->bssid[4],bss->bssid[5],
+                    ssid, freq, (long)mgmt->u.probe_resp.timestamp);
+                vfree(ssid);
+                ssid = NULL;
+            }else{
+                AICWFDBG(LOGERROR, "%s ssid vmalloc fail skip printk ssid info \r\n", __func__);
+            }
+        }
+        //print scan result info end
+#endif
 
-		//print scan result info start
-		ssid_len = ie[1];
-		ssid = (char *)kmalloc(sizeof(char)* (ssid_len + 1), GFP_ATOMIC);
-		memset(ssid, 0, ssid_len + 1);
-		memcpy(ssid, &ie[2], ssid_len);
-		freq = ind->center_freq;
-		AICWFDBG(LOGDEBUG, "%s %02x:%02x:%02x:%02x:%02x:%02x ssid:%s freq:%d timestamp:%ld\r\n", __func__, 
-			bss->bssid[0],bss->bssid[1],bss->bssid[2],
-			bss->bssid[3],bss->bssid[4],bss->bssid[5],
-			ssid, freq, (long)mgmt->u.probe_resp.timestamp);
-		kfree(ssid);
-		ssid = NULL;
-		//print scan result info end
-		
-#ifdef CONFIG_USB_WIRELESS_EXT
+#ifdef CONFIG_USE_WIRELESS_EXT
 		if(rwnx_hw->wext_scan){
 			
 			scan_re_wext = (struct scanu_result_wext *)vmalloc(sizeof(struct scanu_result_wext));
@@ -724,6 +752,7 @@ static inline int rwnx_rx_scanu_result_ind(struct rwnx_hw *rwnx_hw,
 			return 0;
 		}
 #endif
+
     }
 
     if (bss != NULL)
@@ -940,44 +969,68 @@ static inline int rwnx_rx_sm_connect_ind(struct rwnx_hw *rwnx_hw,
     } else if (ind->status_code == WLAN_STATUS_NOT_SUPPORTED_AUTH_ALG) {
         if (rwnx_vif->wep_enabled) {
             rwnx_vif->wep_auth_err = true;
-            printk("con ind wep_auth_err %d\n", rwnx_vif->wep_auth_err);
+            AICWFDBG(LOGINFO, "con ind wep_auth_err %d\n", rwnx_vif->wep_auth_err);
         }
 		atomic_set(&rwnx_vif->drv_conn_state, (int)RWNX_DRV_STATUS_DISCONNECTED);
     }else{
 		atomic_set(&rwnx_vif->drv_conn_state, (int)RWNX_DRV_STATUS_DISCONNECTED);
 	}
 
-    if (!ind->roamed) {
+
+    AICWFDBG(LOGINFO, "%s ind->roamed:%d ind->status_code:%d rwnx_vif->drv_conn_state:%d\r\n", 
+        __func__, 
+        ind->roamed, 
+        ind->status_code,
+        (int)atomic_read(&rwnx_vif->drv_conn_state));
+
+
+    if (!ind->roamed) {//not roaming
         cfg80211_connect_result(dev, (const u8 *)ind->bssid.array, req_ie,
                                 ind->assoc_req_ie_len, rsp_ie,
                                 ind->assoc_rsp_ie_len, ind->status_code,
                                 GFP_ATOMIC);
     }
-    else {
+    else {//roaming
+        if(ind->status_code != 0){
+            AICWFDBG(LOGINFO, "%s roaming fail to notify disconnect \r\n", __func__);
+			cfg80211_disconnected(dev, 0, NULL, 0,1, GFP_ATOMIC);
+        }else{
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
-        struct cfg80211_roam_info info;
-        memset(&info, 0, sizeof(info));
-        if (rwnx_vif->ch_index < NX_CHAN_CTXT_CNT)
-            info.channel = rwnx_hw->chanctx_table[rwnx_vif->ch_index].chan_def.chan;
-        info.bssid = (const u8 *)ind->bssid.array;
-        info.req_ie = req_ie;
-        info.req_ie_len = ind->assoc_req_ie_len;
-        info.resp_ie = rsp_ie;
-        info.resp_ie_len = ind->assoc_rsp_ie_len;
-        cfg80211_roamed(dev, &info, GFP_ATOMIC);
+            struct cfg80211_roam_info info;
+            memset(&info, 0, sizeof(info));
+            if (rwnx_vif->ch_index < NX_CHAN_CTXT_CNT)
+#if LINUX_VERSION_CODE < HIGH_KERNEL_VERSION
+    			info.channel = rwnx_hw->chanctx_table[rwnx_vif->ch_index].chan_def.chan;
 #else
-        chan = ieee80211_get_channel(rwnx_hw->wiphy, ind->center_freq);
-        cfg80211_roamed(dev
+    			info.links[0].channel = rwnx_hw->chanctx_table[rwnx_vif->ch_index].chan_def.chan;
+#endif//LINUX_VERSION_CODE < HIGH_KERNEL_VERSION    
+
+#if LINUX_VERSION_CODE < HIGH_KERNEL_VERSION
+            info.bssid = (const u8 *)ind->bssid.array;
+#else
+            info.links[0].bssid = (const u8 *)ind->bssid.array;;
+#endif//LINUX_VERSION_CODE < HIGH_KERNEL_VERSION
+            info.req_ie = req_ie;
+            info.req_ie_len = ind->assoc_req_ie_len;
+            info.resp_ie = rsp_ie;
+            info.resp_ie_len = ind->assoc_rsp_ie_len;
+            AICWFDBG(LOGINFO, "%s roaming success to notify roam \r\n", __func__);
+            cfg80211_roamed(dev, &info, GFP_ATOMIC);
+#else
+            chan = ieee80211_get_channel(rwnx_hw->wiphy, ind->center_freq);
+            AICWFDBG(LOGINFO, "%s roaming success to notify roam \r\n", __func__);
+            cfg80211_roamed(dev
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 39) || defined(COMPAT_KERNEL_RELEASE)
-            , chan
+                , chan
 #endif
-            , (const u8 *)ind->bssid.array
-            , req_ie
-            , ind->assoc_req_ie_len
-            , rsp_ie
-            , ind->assoc_rsp_ie_len
-            , GFP_ATOMIC);
+                , (const u8 *)ind->bssid.array
+                , req_ie
+                , ind->assoc_req_ie_len
+                , rsp_ie
+                , ind->assoc_rsp_ie_len
+                , GFP_ATOMIC);
 #endif /*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)*/
+            }
     }
     netif_tx_start_all_queues(dev);
     netif_carrier_on(dev);
@@ -985,6 +1038,7 @@ static inline int rwnx_rx_sm_connect_ind(struct rwnx_hw *rwnx_hw,
     return 0;
 }
 
+#if 0//maybe problem exist comment it AIDEN
 void rwnx_cfg80211_unlink_bss(struct rwnx_hw *rwnx_hw, struct rwnx_vif *rwnx_vif){
 	struct wiphy *wiphy = rwnx_hw->wiphy;
 	struct cfg80211_bss *bss = NULL;
@@ -1018,7 +1072,7 @@ void rwnx_cfg80211_unlink_bss(struct rwnx_hw *rwnx_hw, struct rwnx_vif *rwnx_vif
 	rwnx_vif->sta.ssid_len = 0;
 	memset(rwnx_vif->sta.bssid, 0, ETH_ALEN);
 }
-
+#endif//maybe problem exist comment it AIDEN
 
 extern u8 dhcped;
 static inline int rwnx_rx_sm_disconnect_ind(struct rwnx_hw *rwnx_hw,
@@ -1043,9 +1097,9 @@ static inline int rwnx_rx_sm_disconnect_ind(struct rwnx_hw *rwnx_hw,
         return 0;
     }
     dev = rwnx_vif->ndev;
-
+#if 0//maybe problem exist comment it AIDEN
 	rwnx_cfg80211_unlink_bss(rwnx_hw, rwnx_vif);
-
+#endif
 
 #ifdef CONFIG_BR_SUPPORT
 	struct rwnx_vif *vif = netdev_priv(dev);
@@ -1057,9 +1111,9 @@ static inline int rwnx_rx_sm_disconnect_ind(struct rwnx_hw *rwnx_hw,
         rwnx_hw->is_p2p_connected = 0;
     /* if vif is not up, rwnx_close has already been called */
     if (rwnx_vif->up) {
-        if (!ind->ft_over_ds) {
+        if (!ind->ft_over_ds && !ind->reassoc) {
             cfg80211_disconnected(dev, ind->reason_code, NULL, 0,
-                                  (ind->reason_code <= 1), GFP_ATOMIC);
+                                  (ind->reason_code < 1), GFP_ATOMIC);
         }
         netif_tx_stop_all_queues(dev);
         netif_carrier_off(dev);

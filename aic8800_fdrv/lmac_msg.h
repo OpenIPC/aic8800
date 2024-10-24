@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
  ****************************************************************************************
  *
@@ -388,6 +387,14 @@ enum mm_msg_tag
 
     MM_GET_FW_VERSION_REQ,
     MM_GET_FW_VERSION_CFM,
+
+    MM_SET_RESUME_RESTORE_REQ,
+    MM_SET_RESUME_RESTORE_CFM,
+
+    MM_GET_WIFI_DISABLE_REQ,
+    MM_GET_WIFI_DISABLE_CFM,
+
+    MM_CFG_RSSI_CFM,
 
     /// MAX number of messages
     MM_MAX,
@@ -1315,11 +1322,23 @@ typedef struct
     s8_l pwrlvl_11ax_2g4[12];
 } txpwr_lvl_conf_v2_t;
 
+typedef struct
+{
+    u8_l enable;
+    s8_l pwrlvl_11b_11ag_2g4[12];
+    s8_l pwrlvl_11n_11ac_2g4[10];
+    s8_l pwrlvl_11ax_2g4[12];
+    s8_l pwrlvl_11a_5g[12];
+    s8_l pwrlvl_11n_11ac_5g[10];
+    s8_l pwrlvl_11ax_5g[12];
+} txpwr_lvl_conf_v3_t;
+
 struct mm_set_txpwr_lvl_req
 {
   union {
     txpwr_lvl_conf_t txpwr_lvl;
     txpwr_lvl_conf_v2_t txpwr_lvl_v2;
+    txpwr_lvl_conf_v3_t txpwr_lvl_v3;
   };
 };
 
@@ -1361,9 +1380,19 @@ typedef struct
     int8_t chan_142_165;
 } txpwr_ofst_conf_t;
 
+typedef struct
+{
+    int8_t enable;
+    int8_t pwrofst2x_tbl_2g4[3][3];
+    int8_t pwrofst2x_tbl_5g[3][6];
+} txpwr_ofst2x_conf_t;
+
 struct mm_set_txpwr_ofst_req
 {
+  union {
     txpwr_ofst_conf_t txpwr_ofst;
+    txpwr_ofst2x_conf_t txpwr_ofst2x;
+  };
 };
 
 typedef struct
@@ -1632,6 +1661,8 @@ struct scanu_start_req
     u8_l ssid_cnt;
     /// no CCK - For P2P frames not being sent at CCK rate in 2GHz band.
     bool no_cck;
+    /// Scan duration, in us
+    u32_l duration;
 };
 
 struct scanu_vendor_ie_req
@@ -1900,6 +1931,13 @@ enum vendor_hwconfig_tag{
 	CHANNEL_ACCESS_REQ,
 	MAC_TIMESCALE_REQ,
 	CCA_THRESHOLD_REQ,
+	BWMODE_REQ,
+};
+
+enum {
+    BWMODE20M = 0,
+    BWMODE10M,
+    BWMODE5M,
 };
 
 struct mm_set_acs_txop_req
@@ -1920,6 +1958,7 @@ struct mm_set_channel_access_req
 	u8_l  rts_en;
 	u8_l  long_nav_en;
 	u8_l  cfe_en;
+	u8_l  rc_retry_cnt[3];
 };
 
 struct mm_set_mac_timescale_req
@@ -1942,6 +1981,12 @@ struct mm_set_cca_threshold_req
 	s8_l  cca20p_fall_th;
 	s8_l  cca20s_fall_th;
 
+};
+
+struct mm_set_bwmode_req
+{
+    u32_l hwconfig_id;
+    u8_l bwmode;
 };
 
 struct mm_set_txop_req
@@ -2100,6 +2145,16 @@ enum sm_msg_tag
     SM_EXTERNAL_AUTH_REQUIRED_IND,
     /// Response to external authentication request
     SM_EXTERNAL_AUTH_REQUIRED_RSP,
+    /// Request to update assoc elements after FT over the air authentication
+    SM_FT_AUTH_IND,
+    /// Response to FT authentication with updated assoc elements
+    SM_FT_AUTH_RSP,
+
+    SM_RSP_TIMEOUT_IND,
+
+    SM_COEX_TS_TIMEOUT_IND,
+
+    SM_EXTERNAL_AUTH_REQUIRED_RSP_CFM,
 
     /// MAX number of messages
     SM_MAX,
@@ -2208,6 +2263,7 @@ struct sm_disconnect_ind
     u8_l vif_idx;
     /// FT over DS is ongoing
     bool_l ft_over_ds;
+    u8_l reassoc;
 };
 
 /// Structure containing the parameters of the @ref SM_EXTERNAL_AUTH_REQUIRED_IND
@@ -2765,7 +2821,7 @@ struct dbg_rftest_cmd_req
 
 struct dbg_rftest_cmd_cfm
 {
-    u32_l rftest_result[16];
+    u32_l rftest_result[18];
 };
 
 struct dbg_gpio_write_req {

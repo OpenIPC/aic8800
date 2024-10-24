@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
  ******************************************************************************
  *
@@ -30,6 +29,7 @@
 #include "rwnx_mu_group.h"
 #include "rwnx_platform.h"
 #include "rwnx_cmds.h"
+#include "rwnx_compat.h"
 
 #ifdef AICWF_SDIO_SUPPORT
 #include "aicwf_sdio.h"
@@ -56,6 +56,15 @@
 
 #define PS_SP_INTERRUPTED  255
 #define MAC_ADDR_LEN 6
+
+
+#if LINUX_VERSION_CODE >= HIGH_KERNEL_VERSION
+#define IEEE80211_MAX_AMPDU_BUF                             IEEE80211_MAX_AMPDU_BUF_HE
+#define IEEE80211_HE_PHY_CAP6_TRIG_MU_BEAMFORMER_FB         IEEE80211_HE_PHY_CAP6_TRIG_MU_BEAMFORMING_PARTIAL_BW_FB
+#define IEEE80211_HE_PHY_CAP6_TRIG_SU_BEAMFORMER_FB         IEEE80211_HE_PHY_CAP6_TRIG_SU_BEAMFORMING_FB
+#define IEEE80211_HE_PHY_CAP3_RX_HE_MU_PPDU_FROM_NON_AP_STA IEEE80211_HE_PHY_CAP3_RX_PARTIAL_BW_SU_IN_20MHZ_MU
+#endif
+
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 5, 0) || defined(CONFIG_VHT_FOR_OLD_KERNEL)
 enum nl80211_ac {
@@ -342,8 +351,8 @@ struct rwnx_vif {
                                     the AP */
             struct rwnx_sta *tdls_sta; /* Pointer to the TDLS station */
             bool external_auth;  /* Indicate if external authentication is in progress */
-            u8 group_cipher_type;
-            u8 paired_cipher_type;
+            u32 group_cipher_type;
+            u32 paired_cipher_type;
             //connected network info start
             char ssid[33];//ssid max is 32, but this has one spare for '\0'
             int ssid_len;
@@ -612,6 +621,9 @@ struct rwnx_hw {
     #endif
     struct rwnx_survey_info survey[SCAN_CHANNEL_MAX];
     struct cfg80211_scan_request *scan_request;
+#ifdef CONFIG_SCHED_SCAN
+    struct cfg80211_sched_scan_request *sched_scan_req;
+#endif
     struct rwnx_chanctx chanctx_table[NX_CHAN_CTXT_CNT];
     u8 cur_chanctx;
 
@@ -691,6 +703,9 @@ struct rwnx_hw {
     struct workqueue_struct *apmStaloss_wq;
     u8 apm_vif_idx;
     u8 sta_mac_addr[6];
+#ifdef CONFIG_SCHED_SCAN
+        bool is_sched_scan;
+#endif//CONFIG_SCHED_SCAN 
 
 	struct sta_tx_flowctrl sta_flowctrl[NX_REMOTE_STA_MAX];
 #if 0
@@ -705,7 +720,7 @@ struct rwnx_hw {
     struct ieee80211_sta_vht_cap vht_cap_5G;
 #endif
 
-#ifdef CONFIG_USB_WIRELESS_EXT
+#ifdef CONFIG_USE_WIRELESS_EXT
 	bool wext_scan;
 	struct completion wext_scan_com;
 	struct list_head wext_scanre_list;

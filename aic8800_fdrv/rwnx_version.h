@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 #ifndef _RWNX_VERSION_H_
 #define _RWNX_VERSION_H_
 

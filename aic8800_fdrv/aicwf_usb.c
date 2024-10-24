@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
  * aicwf_usb.c
  *
@@ -34,11 +33,12 @@ extern atomic_t aicwf_deinit_atomic;
 
 #ifdef CONFIG_TXRX_THREAD_PRIO
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
+#include "uapi/linux/sched/types.h"
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
 #include "linux/sched/types.h"
 #else
-//#include "linux/sched/rt.h"
-//#include "uapi/linux/sched/types.h"
+#include "linux/sched/rt.h"
 #endif
 
 int bustx_thread_prio = 1;
@@ -47,6 +47,11 @@ int busrx_thread_prio = 1;
 module_param(busrx_thread_prio, int, 0);
 #endif
 
+#ifdef CONFIG_USB_RX_AGGR
+bool aicwf_usb_rx_aggr = true;
+#else
+bool aicwf_usb_rx_aggr = false;
+#endif
 atomic_t rx_urb_cnt;
 
 void aicwf_usb_tx_flowctrl(struct rwnx_hw *rwnx_hw, bool state)
@@ -307,7 +312,11 @@ static void aicwf_usb_rx_complete(struct urb *urb)
     
     if (usb_dev->state == USB_UP_ST) {
         spin_lock_irqsave(&rx_priv->rxqlock, flags);
-
+        if (aicwf_usb_rx_aggr) {
+	        rx_buff->len = urb->actual_length;
+            //printk("%s rx_buff->len:%d \r\n", __func__, rx_buff->len);
+        }
+        
         if(!aicwf_rxbuff_enqueue(usb_dev->dev, &rx_priv->rxq, rx_buff)){
             spin_unlock_irqrestore(&rx_priv->rxqlock, flags);
             usb_err("rx_priv->rxq is over flow!!!\n");
@@ -387,20 +396,21 @@ static void aicwf_usb_rx_complete(struct urb *urb)
         	return;
 		}
     }
-    #ifdef CONFIG_USB_RX_AGGR
-    if (urb->actual_length > 1600 * 30) {
-        printk("r%d\n", urb->actual_length);
+
+#if 0
+    if ((urb->actual_length > 1600 * 30) && (aicwf_usb_rx_aggr)) {
+	printk("r%d\n", urb->actual_length);
     }
-    #endif
+#endif
 
     if (usb_dev->state == USB_UP_ST) {
 
         skb_put(skb, urb->actual_length);
 
         spin_lock_irqsave(&rx_priv->rxqlock, flags);
-        #ifdef CONFIG_USB_RX_AGGR
-        skb->len = urb->actual_length;
-        #endif
+        if (aicwf_usb_rx_aggr) {
+	    skb->len = urb->actual_length;
+        }
         if(!aicwf_rxframe_enqueue(usb_dev->dev, &rx_priv->rxq, skb)){
             spin_unlock_irqrestore(&rx_priv->rxqlock, flags);
             usb_err("rx_priv->rxq is over flow!!!\n");
@@ -557,7 +567,11 @@ static int aicwf_usb_submit_rx_urb(struct aic_usb_dev *usb_dev,
         return -1;
     }
 
-    skb = __dev_alloc_skb(AICWF_USB_MAX_PKT_SIZE, GFP_ATOMIC/*GFP_KERNEL*/);
+    if(aicwf_usb_rx_aggr){
+	skb = __dev_alloc_skb(AICWF_USB_AGGR_MAX_PKT_SIZE, GFP_ATOMIC/*GFP_KERNEL*/);
+    } else {
+	skb = __dev_alloc_skb(AICWF_USB_MAX_PKT_SIZE, GFP_ATOMIC/*GFP_KERNEL*/);
+    }
     if (!skb) {
         aicwf_usb_rx_buf_put(usb_dev, usb_buf);
         return -1;
@@ -582,6 +596,7 @@ static int aicwf_usb_submit_rx_urb(struct aic_usb_dev *usb_dev,
         aicwf_usb_rx_buf_put(usb_dev, usb_buf);
 
         msleep(100);
+	return -1;
     }else{
     	atomic_inc(&rx_urb_cnt);
 	}
@@ -601,6 +616,8 @@ static void aicwf_usb_rx_submit_all_urb(struct aic_usb_dev *usb_dev)
 
     while((usb_buf = aicwf_usb_rx_buf_get(usb_dev)) != NULL) {
         if (aicwf_usb_submit_rx_urb(usb_dev, usb_buf)) {
+            AICWFDBG(LOGERROR, "sub rx fail\n");
+				break;
             AICWFDBG(LOGERROR, "usb rx refill fail\n");
             if (usb_dev->state != USB_UP_ST)
                 return;
@@ -819,6 +836,7 @@ int aicwf_usb_send(struct aicwf_tx_priv *tx_priv)
     u8* buf;
     int ret = 0;
     int curr_len = 0;
+    unsigned long flags;
 
     if (aicwf_is_framequeue_empty(&tx_priv->txq)) {
         ret = -1;
@@ -876,7 +894,7 @@ int aicwf_usb_send(struct aicwf_tx_priv *tx_priv)
 
     curr_len = tx_priv->tail - tx_priv->head;
 
-    AICWFDBG(LOGERROR, "%s len %d, cnt %d\n", __func__,curr_len, usb_buf->aggr_cnt);
+    AICWFDBG(LOGTRACE, "%s len %d, cnt %d\n", __func__,curr_len, usb_buf->aggr_cnt);
     tx_buf->len = tx_priv->tail - tx_priv->head;
     spin_unlock_bh(&usbdev->tx_priv->txdlock);
     usb_fill_bulk_urb(usb_buf->urb, usbdev->udev, usbdev->bulk_out_pipe,
@@ -885,7 +903,7 @@ int aicwf_usb_send(struct aicwf_tx_priv *tx_priv)
 
     aicwf_usb_tx_queue(usbdev, &usbdev->tx_post_list, usb_buf,
                     &usbdev->tx_post_count, &usbdev->tx_post_lock);
-/*
+
     flow_ctrl:
     spin_lock_irqsave(&usbdev->tx_flow_lock, flags);
     if (usbdev->tx_free_count < AICWF_USB_TX_LOW_WATER) {
@@ -893,7 +911,7 @@ int aicwf_usb_send(struct aicwf_tx_priv *tx_priv)
         aicwf_usb_tx_flowctrl(usbdev->rwnx_hw, true);
     }
     spin_unlock_irqrestore(&usbdev->tx_flow_lock, flags);
-*/
+
     return ret;
 }
 
@@ -928,7 +946,7 @@ static void aicwf_usb_tx_process(struct aic_usb_dev *usb_dev)
         }
         data = usb_buf->skb->data;
 
-        ret = usb_submit_urb(usb_buf->urb, GFP_ATOMIC);
+        ret = usb_submit_urb(usb_buf->urb, GFP_KERNEL);
         if (ret) {
             AICWFDBG(LOGERROR, "aicwf_usb_bus_tx usb_submit_urb FAILED err:%d\n", ret);
             #ifdef CONFIG_USB_TX_AGGR
@@ -983,9 +1001,13 @@ int usb_bustx_thread(void *data)
 
 #ifdef CONFIG_TXRX_THREAD_PRIO
 	if (bustx_thread_prio > 0) {
-			struct sched_param param;
-			param.sched_priority = (bustx_thread_prio < MAX_RT_PRIO)?bustx_thread_prio:(MAX_RT_PRIO-1);
-			sched_setscheduler(current, SCHED_FIFO, &param);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0))
+        sched_set_fifo_low(current);
+#else
+        struct sched_param param;
+        param.sched_priority = (bustx_thread_prio < MAX_RT_PRIO)?bustx_thread_prio:(MAX_RT_PRIO-1);
+        sched_setscheduler(current, SCHED_FIFO, &param);
+#endif
 	}
 #endif
 	AICWFDBG(LOGINFO, "%s the policy of current thread is:%d\n", __func__, current->policy);
@@ -1027,9 +1049,13 @@ int usb_busrx_thread(void *data)
 
 #ifdef CONFIG_TXRX_THREAD_PRIO
 	if (busrx_thread_prio > 0) {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0))
+            sched_set_fifo_low(current);
+#else
 			struct sched_param param;
 			param.sched_priority = (busrx_thread_prio < MAX_RT_PRIO)?busrx_thread_prio:(MAX_RT_PRIO-1);
 			sched_setscheduler(current, SCHED_FIFO, &param);
+#endif
 	}
 #endif
 	AICWFDBG(LOGINFO, "%s the policy of current thread is:%d\n", __func__, current->policy);
@@ -1068,9 +1094,13 @@ int usb_msg_busrx_thread(void *data)
 
 #ifdef CONFIG_TXRX_THREAD_PRIO
 			if (busrx_thread_prio > 0) {
-					struct sched_param param;
-					param.sched_priority = (busrx_thread_prio < MAX_RT_PRIO)?busrx_thread_prio:(MAX_RT_PRIO-1);
-					sched_setscheduler(current, SCHED_FIFO, &param);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0))
+                sched_set_fifo_low(current);
+#else
+                struct sched_param param;
+                param.sched_priority = (busrx_thread_prio < MAX_RT_PRIO)?busrx_thread_prio:(MAX_RT_PRIO-1);
+                sched_setscheduler(current, SCHED_FIFO, &param);
+#endif
 			}
 #endif
 			AICWFDBG(LOGINFO, "%s the policy of current thread is:%d\n", __func__, current->policy);
@@ -1080,16 +1110,23 @@ int usb_msg_busrx_thread(void *data)
 
 
     while (1) {
+#if 0
         if(kthread_should_stop()) {
             usb_err("usb msg busrx thread stop\n");
             break;
         }
+#endif
         if (!wait_for_completion_interruptible(&bus_if->msg_busrx_trgg)) {
-            if(bus_if->state == BUS_DOWN_ST)
+            if(bus_if->state == BUS_DOWN_ST){
+		AICWFDBG(LOGINFO, "usb msg busrx thread will to stop\n");
                 break;
+	    }
             aicwf_process_msg_rxframes(rx_priv);
         }
     }
+
+	aic_thread_wait_stop();
+	AICWFDBG(LOGINFO, "usb msg busrx thread stop\n");
 
     return 0;
 }
@@ -1148,8 +1185,9 @@ static int aicwf_usb_bus_txmsg(struct device *dev, u8 *buf, u32 len)
     usb_dev->msg_out_urb->transfer_dma = usb_dev->cmd_dma_trans_addr;
     usb_dev->msg_out_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
     #endif
+#ifdef CONFIG_USE_USB_ZERO_PACKET
     usb_dev->msg_out_urb->transfer_flags |= URB_ZERO_PACKET;
-
+#endif
     ret = usb_submit_urb(usb_dev->msg_out_urb, GFP_ATOMIC);
     if (ret) {
         usb_err("usb_submit_urb failed %d\n", ret);
@@ -1561,7 +1599,8 @@ static int aicwf_usb_bus_start(struct device *dev)
     aicwf_usb_rx_prepare(usb_dev);
     aicwf_usb_tx_prepare(usb_dev);
 #ifdef CONFIG_USB_MSG_IN_EP
-	if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+	if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+        usb_dev->chipid != PRODUCT_ID_AIC8800D81){
 		aicwf_usb_msg_rx_prepare(usb_dev);
 	}
 #endif
@@ -1608,7 +1647,8 @@ static void aicwf_usb_cancel_all_urbs_(struct aic_usb_dev *usb_dev)
 
     usb_kill_anchored_urbs(&usb_dev->rx_submitted);
 #ifdef CONFIG_USB_MSG_IN_EP
-	if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+	if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+        usb_dev->chipid != PRODUCT_ID_AIC8800D81){
    		usb_kill_anchored_urbs(&usb_dev->msg_rx_submitted);
 	}
 #endif
@@ -1645,7 +1685,8 @@ static void aicwf_usb_deinit(struct aic_usb_dev *usbdev)
     aicwf_usb_free_urb(&usbdev->rx_free_list, &usbdev->rx_free_lock);
     aicwf_usb_free_urb(&usbdev->tx_free_list, &usbdev->tx_free_lock);
 #ifdef CONFIG_USB_MSG_IN_EP
-	if(usbdev->chipid != PRODUCT_ID_AIC8801){
+	if(usbdev->chipid != PRODUCT_ID_AIC8801 &&
+        usbdev->chipid != PRODUCT_ID_AIC8800D81){
 		cancel_work_sync(&usbdev->msg_rx_urb_work);
 		aicwf_usb_free_urb(&usbdev->msg_rx_free_list, &usbdev->msg_rx_free_lock);
 	}
@@ -1680,7 +1721,8 @@ static int aicwf_usb_init(struct aic_usb_dev *usb_dev)
     init_waitqueue_head(&usb_dev->msg_wait);
     init_usb_anchor(&usb_dev->rx_submitted);
 #ifdef CONFIG_USB_MSG_IN_EP
-	if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+	if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+        usb_dev->chipid != PRODUCT_ID_AIC8800D81){
 		init_usb_anchor(&usb_dev->msg_rx_submitted);
 	}
 #endif
@@ -1690,7 +1732,8 @@ static int aicwf_usb_init(struct aic_usb_dev *usb_dev)
     spin_lock_init(&usb_dev->rx_free_lock);
     spin_lock_init(&usb_dev->tx_flow_lock);
 #ifdef CONFIG_USB_MSG_IN_EP
-	if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+	if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+        usb_dev->chipid != PRODUCT_ID_AIC8800D81){
 		spin_lock_init(&usb_dev->msg_rx_free_lock);
 	}
 #endif
@@ -1699,7 +1742,8 @@ static int aicwf_usb_init(struct aic_usb_dev *usb_dev)
     INIT_LIST_HEAD(&usb_dev->tx_free_list);
     INIT_LIST_HEAD(&usb_dev->tx_post_list);
 #ifdef CONFIG_USB_MSG_IN_EP
-	if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+	if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+        usb_dev->chipid != PRODUCT_ID_AIC8800D81){
 		INIT_LIST_HEAD(&usb_dev->msg_rx_free_list);
 	}
 #endif
@@ -1718,7 +1762,8 @@ static int aicwf_usb_init(struct aic_usb_dev *usb_dev)
         goto error;
     }
 #ifdef CONFIG_USB_MSG_IN_EP
-	if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+	if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+        usb_dev->chipid != PRODUCT_ID_AIC8800D81){
 		ret =  aicwf_usb_alloc_msg_rx_urb(usb_dev);
 		if (ret) {
 			goto error;
@@ -1736,7 +1781,8 @@ static int aicwf_usb_init(struct aic_usb_dev *usb_dev)
 
     INIT_WORK(&usb_dev->rx_urb_work, aicwf_usb_rx_urb_work);
 #ifdef CONFIG_USB_MSG_IN_EP
-	if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+	if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+        usb_dev->chipid != PRODUCT_ID_AIC8800D81){
 		INIT_WORK(&usb_dev->msg_rx_urb_work, aicwf_usb_msg_rx_urb_work);
 	}
 #endif
@@ -1829,7 +1875,8 @@ static int aicwf_parse_usb(struct aic_usb_dev *usb_dev, struct usb_interface *in
             }
 #ifdef CONFIG_USB_MSG_IN_EP
             else if (!usb_dev->msg_in_pipe) {
-				if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+				if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+                    usb_dev->chipid != PRODUCT_ID_AIC8800D81){
                 	usb_dev->msg_in_pipe = usb_rcvbulkpipe(usb, endpoint_num);
 				}
             }
@@ -1867,7 +1914,8 @@ static int aicwf_parse_usb(struct aic_usb_dev *usb_dev, struct usb_interface *in
     }
 #endif
 #ifdef CONFIG_USB_MSG_IN_EP
-		if(usb_dev->chipid != PRODUCT_ID_AIC8801){
+		if(usb_dev->chipid != PRODUCT_ID_AIC8801 &&
+            usb_dev->chipid != PRODUCT_ID_AIC8800D81){
 			if (usb_dev->msg_in_pipe == 0) {
 				usb_err("No RX Msg (in) Bulk EP found\n");
 			}
@@ -1877,7 +1925,7 @@ static int aicwf_parse_usb(struct aic_usb_dev *usb_dev, struct usb_interface *in
     if (usb->speed == USB_SPEED_HIGH){
 		AICWFDBG(LOGINFO, "Aic high speed USB device detected\n");
     }else{
-    	AICWFDBG(LOGINFO, "Aic high speed USB device detected\n");
+    	AICWFDBG(LOGINFO, "Aic full speed USB device detected\n");
     }
 
     exit:
@@ -1974,6 +2022,11 @@ static int aicwf_usb_chipmatch(struct aic_usb_dev *usb_dev, u16_l vid, u16_l pid
 	}else if(pid == USB_PRODUCT_ID_AIC8800DW){
         usb_dev->chipid = PRODUCT_ID_AIC8800DW;
 		AICWFDBG(LOGINFO, "%s USE AIC8800DW\r\n", __func__);
+        return 0;
+    }else if(pid == USB_PRODUCT_ID_AIC8800D81){
+        usb_dev->chipid = PRODUCT_ID_AIC8800D81;
+	aicwf_usb_rx_aggr = true;
+		AICWFDBG(LOGINFO, "%s USE AIC8800D81\r\n", __func__);
         return 0;
     }else{
 		return -1;
@@ -2117,14 +2170,10 @@ static void aicwf_usb_disconnect(struct usb_interface *intf)
 #endif
     aicwf_bus_deinit(usb_dev->dev);
     aicwf_usb_deinit(usb_dev);
-    rwnx_cmd_mgr_deinit(&usb_dev->cmd_mgr);
 
 #ifdef CONFIG_GPIO_WAKEUP
 	rwnx_unregister_hostwake_irq(usb_dev->dev);
 #endif
-
-    if (usb_dev->rx_priv)
-        aicwf_rx_deinit(usb_dev->rx_priv);
 
     kfree(usb_dev->bus_if);
     kfree(usb_dev);
@@ -2202,6 +2251,7 @@ static struct usb_device_id aicwf_usb_id_table[] = {
     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_PRODUCT_ID_AIC8800)},
 #else
     {USB_DEVICE_AND_INTERFACE_INFO(USB_VENDOR_ID_AIC, USB_PRODUCT_ID_AIC8801, 0xff, 0xff, 0xff)},
+    {USB_DEVICE_AND_INTERFACE_INFO(USB_VENDOR_ID_AIC, USB_PRODUCT_ID_AIC8800D81, 0xff, 0xff, 0xff)},
     {USB_DEVICE_AND_INTERFACE_INFO(USB_VENDOR_ID_AIC, USB_PRODUCT_ID_AIC8800DC, 0xff, 0xff, 0xff)},
     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_PRODUCT_ID_AIC8800DW)},
 #endif
@@ -2237,8 +2287,21 @@ void aicwf_usb_register(void)
 
 void aicwf_usb_exit(void)
 {
-	//RWNX_DBG(RWNX_FN_ENTRY_STR);
-	AICWFDBG(LOGDEBUG, "%s in_interrupt:%d in_softirq:%d in_atomic:%d\r\n", __func__, (int)in_interrupt(), (int)in_softirq(), (int)in_atomic());
+    int retry = 5;
+    AICWFDBG(LOGINFO, "%s Enter\r\n", __func__);
+        
+    AICWFDBG(LOGDEBUG, "%s in_interrupt:%d in_softirq:%d in_atomic:%d\r\n", __func__, (int)in_interrupt(), (int)in_softirq(), (int)in_atomic());
+
+    do{
+        AICWFDBG(LOGINFO, "aicwf_deinit_atomic is busy. waiting for 500ms retry:%d \r\n",
+            retry);
+        mdelay(500);
+        retry--;
+        if(retry == 0){
+            break;
+        }
+    }while(atomic_read(&aicwf_deinit_atomic) == 0);
+    
 	atomic_set(&aicwf_deinit_atomic, 0);
 	if(down_timeout(&aicwf_deinit_sem, msecs_to_jiffies(SEM_TIMOUT)) != 0){
 		AICWFDBG(LOGERROR, "%s semaphore waiting timeout\r\n", __func__);
@@ -2248,7 +2311,7 @@ void aicwf_usb_exit(void)
 		g_rwnx_plat->wait_disconnect_cb = false;
 	}
 	
-	AICWFDBG(LOGINFO, "%s Enter\r\n", __func__);
+
 
 	if(!g_rwnx_plat || !g_rwnx_plat->enabled){
 		AICWFDBG(LOGINFO, "g_rwnx_plat is not ready. waiting for 500ms\r\n");

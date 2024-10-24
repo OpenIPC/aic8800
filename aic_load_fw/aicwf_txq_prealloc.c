@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/slab.h>
 #include "aicwf_debug.h"
 
@@ -9,11 +8,11 @@ struct prealloc_txq{
 };
 
 struct prealloc_txq prealloc_txq;
-#define MAX_TXQ_SIZE 60 * 1024
+#define MAX_TXQ_SIZE 30 * 1024
 
 void *aicwf_prealloc_txq_alloc(size_t size)
 {
-    AICWFDBG(LOGINFO, "aicwf_prealloc_txq_alloc size %zu \r\n", size);
+
     BUG_ON(size > MAX_TXQ_SIZE);
 
     //check prealloc_txq.size

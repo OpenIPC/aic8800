@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /**
 ******************************************************************************
 *
@@ -34,7 +33,7 @@ struct rwnx_mod_params rwnx_mod_params = {
     COMMON_PARAM(vht_on, true, true)
     COMMON_PARAM(he_on, true, true)
     COMMON_PARAM(mcs_map, IEEE80211_VHT_MCS_SUPPORT_0_9, IEEE80211_VHT_MCS_SUPPORT_0_9)
-    COMMON_PARAM(he_mcs_map, IEEE80211_HE_MCS_SUPPORT_0_9, IEEE80211_HE_MCS_SUPPORT_0_9)
+    COMMON_PARAM(he_mcs_map, IEEE80211_HE_MCS_SUPPORT_0_11, IEEE80211_HE_MCS_SUPPORT_0_11)
     COMMON_PARAM(he_ul_on, false, false)
     COMMON_PARAM(ldpc_on, true, true)
     COMMON_PARAM(stbc_on, true, true)
@@ -43,7 +42,7 @@ struct rwnx_mod_params rwnx_mod_params = {
     COMMON_PARAM(uapsd_timeout, 300, 300)
     COMMON_PARAM(ap_uapsd_on, true, true)
     COMMON_PARAM(sgi, true, true)
-    COMMON_PARAM(sgi80, false, false)
+    COMMON_PARAM(sgi80, true, true)
     COMMON_PARAM(use_2040, 1, 1)
     COMMON_PARAM(nss, 1, 1)
     COMMON_PARAM(amsdu_rx_max, 2, 2)
@@ -53,7 +52,7 @@ struct rwnx_mod_params rwnx_mod_params = {
     COMMON_PARAM(murx, true, true)
     COMMON_PARAM(mutx, true, true)
     COMMON_PARAM(mutx_on, true, true)
-    COMMON_PARAM(use_80, false, false)
+    COMMON_PARAM(use_80, true, true)
     COMMON_PARAM(custregd, true, true)
     COMMON_PARAM(custchan, false, false)
     COMMON_PARAM(roc_dur_max, 500, 500)
@@ -278,7 +277,7 @@ void rwnx_get_countrycode_channels(struct wiphy *wiphy,
 	int end_freq = 0;
 	int center_freq = 0;
 	char channel[4];
-#ifdef CONFIG_USB_WIRELESS_EXT
+#ifdef CONFIG_USE_WIRELESS_EXT
 	struct rwnx_hw *rwnx_hw = wiphy_priv(wiphy);
 	int support_freqs_counter = 0; 
 #endif
@@ -300,7 +299,7 @@ void rwnx_get_countrycode_channels(struct wiphy *wiphy,
 				end_freq = regdomain->reg_rules[rule_index].freq_range.end_freq_khz/1000;
 				center_freq = sband->channels[channel_index].center_freq;
 				if((center_freq - 10) >= start_freq && (center_freq + 10) <= end_freq){
-#ifdef CONFIG_USB_WIRELESS_EXT
+#ifdef CONFIG_USE_WIRELESS_EXT
 					rwnx_hw->support_freqs[support_freqs_counter++] = center_freq;
 #endif
 					sprintf(channel, "%d",ieee80211_frequency_to_channel(center_freq));
@@ -318,7 +317,7 @@ void rwnx_get_countrycode_channels(struct wiphy *wiphy,
 			}
 		}
 	}
-#ifdef CONFIG_USB_WIRELESS_EXT
+#ifdef CONFIG_USE_WIRELESS_EXT
 	rwnx_hw->support_freqs_number = support_freqs_counter;
 #endif
 	AICWFDBG(LOGINFO, "%s support channel:%s\r\n", __func__, ccode_channels);
@@ -787,7 +786,6 @@ static void rwnx_set_vht_capa(struct rwnx_hw *rwnx_hw, struct wiphy *wiphy)
 			rwnx_hw->vht_cap_2G.vht_mcs.rx_mcs_map |= cpu_to_le16(mcs_map << (i*2));
 			rwnx_hw->vht_cap_2G.vht_mcs.rx_highest = MAX_VHT_RATE(mcs_map, nss, bw_max);
 			mcs_map = IEEE80211_VHT_MCS_SUPPORT_0_7;
-			printk("lemon map=%x\n", rwnx_hw->vht_cap_2G.vht_mcs.rx_mcs_map);
 		}
 		for (; i < 8; i++) {
 			rwnx_hw->vht_cap_2G.vht_mcs.rx_mcs_map |= cpu_to_le16(
@@ -1257,8 +1255,8 @@ static void rwnx_set_he_capa(struct rwnx_hw *rwnx_hw, struct wiphy *wiphy)
     he_cap->he_cap_elem.phy_cap_info[8] |= IEEE80211_HE_PHY_CAP8_20MHZ_IN_40MHZ_HE_PPDU_IN_2G;
     he_cap->he_cap_elem.phy_cap_info[9] |= IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_COMP_SIGB |
                                            IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_NON_COMP_SIGB;
-    //mcs_map = rwnx_hw->mod_params->he_mcs_map;
-    mcs_map = min_t(int, rwnx_hw->mod_params->he_mcs_map, IEEE80211_HE_MCS_SUPPORT_0_9);
+    mcs_map = rwnx_hw->mod_params->he_mcs_map;
+    //mcs_map = min_t(int, rwnx_hw->mod_params->he_mcs_map, IEEE80211_HE_MCS_SUPPORT_0_9);
     memset(&he_cap->he_mcs_nss_supp, 0, sizeof(he_cap->he_mcs_nss_supp));
     for (i = 0; i < nss; i++) {
         __le16 unsup_for_ss = cpu_to_le16(IEEE80211_HE_MCS_NOT_SUPPORTED << (i*2));
@@ -1384,8 +1382,8 @@ static void rwnx_set_he_capa(struct rwnx_hw *rwnx_hw, struct wiphy *wiphy)
     he_cap->he_cap_elem.phy_cap_info[9] |= IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_COMP_SIGB |
                                            IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_NON_COMP_SIGB;
     #endif
-    //mcs_map = rwnx_hw->mod_params->he_mcs_map;
-    mcs_map = min_t(int, rwnx_hw->mod_params->he_mcs_map, IEEE80211_HE_MCS_SUPPORT_0_9);
+    mcs_map = rwnx_hw->mod_params->he_mcs_map;
+    //mcs_map = min_t(int, rwnx_hw->mod_params->he_mcs_map, IEEE80211_HE_MCS_SUPPORT_0_9);
     memset(&he_cap->he_mcs_nss_supp, 0, sizeof(he_cap->he_mcs_nss_supp));
     for (i = 0; i < nss; i++) {
         __le16 unsup_for_ss = cpu_to_le16(IEEE80211_HE_MCS_NOT_SUPPORTED << (i*2));
@@ -1489,8 +1487,8 @@ static void rwnx_set_he_capa(struct rwnx_hw *rwnx_hw, struct wiphy *wiphy)
 	    he_cap->he_cap_elem.phy_cap_info[9] |= IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_COMP_SIGB |
 	                                           IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_NON_COMP_SIGB;
 	    #endif
-	    //mcs_map = rwnx_hw->mod_params->he_mcs_map;
-	    mcs_map = min_t(int, rwnx_hw->mod_params->he_mcs_map, IEEE80211_HE_MCS_SUPPORT_0_9);
+	    mcs_map = rwnx_hw->mod_params->he_mcs_map;
+	    //mcs_map = min_t(int, rwnx_hw->mod_params->he_mcs_map, IEEE80211_HE_MCS_SUPPORT_0_9);
 	    memset(&he_cap->he_mcs_nss_supp, 0, sizeof(he_cap->he_mcs_nss_supp));
 	    for (i = 0; i < nss; i++) {
 	        __le16 unsup_for_ss = cpu_to_le16(IEEE80211_HE_MCS_NOT_SUPPORTED << (i*2));
@@ -1684,6 +1682,31 @@ int rwnx_handle_dynparams(struct rwnx_hw *rwnx_hw, struct wiphy *wiphy)
     }
 #endif
 
+    //check he_mcs max
+    if(rwnx_hw->usbdev->chipid != PRODUCT_ID_AIC8800D81 && 
+        rwnx_hw->mod_params->he_mcs_map > IEEE80211_HE_MCS_SUPPORT_0_9){
+        rwnx_hw->mod_params->he_mcs_map = IEEE80211_HE_MCS_SUPPORT_0_9;
+    }
+
+    //check use_80 support
+    if(rwnx_hw->usbdev->chipid != PRODUCT_ID_AIC8800D81 &&
+        rwnx_hw->mod_params->use_80 == true){
+        rwnx_hw->mod_params->use_80 = false;
+    }
+
+    //check sgi80 support
+    if(rwnx_hw->usbdev->chipid != PRODUCT_ID_AIC8800D81 &&
+        rwnx_hw->mod_params->sgi80 == true){
+        rwnx_hw->mod_params->sgi80 = false;
+    }
+#ifdef CONFIG_5M10M
+    rwnx_hw->mod_params->he_mcs_map = IEEE80211_VHT_MCS_SUPPORT_0_7;
+    rwnx_hw->mod_params->he_mcs_map = IEEE80211_HE_MCS_SUPPORT_0_7;
+    rwnx_hw->mod_params->use_2040 = false;
+    rwnx_hw->mod_params->use_80 = false;
+    rwnx_hw->mod_params->sgi80 = false;
+#endif
+
     /* Set wiphy parameters */
     rwnx_set_wiphy_params(rwnx_hw, wiphy);
     /* Set VHT capabilities */
@@ -1706,11 +1729,11 @@ void rwnx_custregd(struct rwnx_hw *rwnx_hw, struct wiphy *wiphy)
 // registration (in rwnx_set_wiphy_params()), so nothing has to be done here
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 0, 0)
-    if (!rwnx_hw->mod_params->custregd)
-        return;
-
     wiphy->regulatory_flags |= REGULATORY_IGNORE_STALE_KICKOFF;
     wiphy->regulatory_flags |= REGULATORY_WIPHY_SELF_MANAGED;
+
+    if (!rwnx_hw->mod_params->custregd)
+        return;
 
     rtnl_lock();
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
