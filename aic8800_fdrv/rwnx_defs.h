@@ -30,6 +30,9 @@
 #include "rwnx_platform.h"
 #include "rwnx_cmds.h"
 #include "rwnx_compat.h"
+#ifdef CONFIG_FILTER_TCP_ACK
+#include "aicwf_tcp_ack.h"
+#endif
 
 #ifdef AICWF_SDIO_SUPPORT
 #include "aicwf_sdio.h"
@@ -56,6 +59,20 @@
 
 #define PS_SP_INTERRUPTED  255
 #define MAC_ADDR_LEN 6
+
+//because android kernel 5.15 uses kernel 6.0 or 6.1 kernel api
+#ifdef ANDROID_PLATFORM
+#define HIGH_KERNEL_VERSION KERNEL_VERSION(5, 15, 41)
+#define HIGH_KERNEL_VERSION2 KERNEL_VERSION(5, 15, 41)
+#define HIGH_KERNEL_VERSION3 KERNEL_VERSION(5, 15, 104)
+#define HIGH_KERNEL_VERSION4 KERNEL_VERSION(6, 1, 0)
+#else
+#define HIGH_KERNEL_VERSION KERNEL_VERSION(6, 0, 0)
+#define HIGH_KERNEL_VERSION2 KERNEL_VERSION(6, 1, 0)
+#define HIGH_KERNEL_VERSION3 KERNEL_VERSION(6, 3, 0)
+#define HIGH_KERNEL_VERSION4 KERNEL_VERSION(6, 3, 0)
+#endif
+
 
 
 #if LINUX_VERSION_CODE >= HIGH_KERNEL_VERSION
@@ -326,6 +343,7 @@ struct rwnx_vif {
     struct net_device *ndev;
     struct net_device_stats net_stats;
     struct rwnx_key key[6];
+    unsigned long drv_flags;
     atomic_t drv_conn_state;
     u8 drv_vif_index;           /* Identifier of the VIF in driver */
     u8 vif_index;               /* Identifier of the station in FW */
@@ -353,11 +371,13 @@ struct rwnx_vif {
             bool external_auth;  /* Indicate if external authentication is in progress */
             u32 group_cipher_type;
             u32 paired_cipher_type;
-            //connected network info start
-            char ssid[33];//ssid max is 32, but this has one spare for '\0'
-            int ssid_len;
-            u8 bssid[ETH_ALEN];
-            //connected network info end
+			//connected network info start
+			char ssid[33];//ssid max is 32, but this has one spare for '\0'
+			int ssid_len;
+			u8 bssid[ETH_ALEN];
+			u32 conn_owner_nlportid;
+			bool is_roam;
+			//connected network info end
         } sta;
         struct
         {
@@ -589,12 +609,22 @@ struct rwnx_phy_info {
 };
 
 /* rwnx driver status */
+void rwnx_set_conn_state(atomic_t *drv_conn_state, int state);
 
 enum rwnx_drv_connect_status { 
 	RWNX_DRV_STATUS_DISCONNECTED = 0,
 	RWNX_DRV_STATUS_DISCONNECTING, 
 	RWNX_DRV_STATUS_CONNECTING, 
 	RWNX_DRV_STATUS_CONNECTED, 
+	RWNX_DRV_STATUS_ROAMING,
+};
+
+static const char *const s_conn_state[] = {
+    "RWNX_DRV_STATUS_DISCONNECTED",
+    "RWNX_DRV_STATUS_DISCONNECTING",
+    "RWNX_DRV_STATUS_CONNECTING",
+    "RWNX_DRV_STATUS_CONNECTED",
+    "RWNX_DRV_STATUS_ROAMING",
 };
 
 
@@ -628,14 +658,16 @@ struct rwnx_hw {
     u8 cur_chanctx;
 
     u8 monitor_vif; /* FW id of the monitor interface, RWNX_INVALID_VIF if no monitor vif at fw level */
-
+#ifdef CONFIG_FILTER_TCP_ACK
+       /* tcp ack management */
+    struct tcp_ack_manage ack_m;
+#endif
     /* RoC Management */
     struct rwnx_roc_elem *roc_elem;             /* Information provided by cfg80211 in its remain on channel request */
     u32 roc_cookie_cnt;                         /* Counter used to identify RoC request sent by cfg80211 */
 
     struct rwnx_cmd_mgr *cmd_mgr;
 
-    unsigned long drv_flags;
     struct rwnx_plat *plat;
 
     spinlock_t tx_lock;
@@ -678,7 +710,7 @@ struct rwnx_hw {
 #endif
     struct rwnx_hwq hwq[NX_TXQ_CNT];
 
-    u8 avail_idx_map;
+    u64 avail_idx_map;
     u8 vif_started;
     bool adding_sta;
     struct rwnx_phy_info phy;
@@ -698,11 +730,19 @@ struct rwnx_hw {
     atomic_t p2p_alive_timer_count;
     bool band_5g_support;
     bool fwlog_en;
+    bool scanning;
+    bool p2p_working;
 
-	struct work_struct apmStalossWork;
+    struct work_struct apmStalossWork;
     struct workqueue_struct *apmStaloss_wq;
     u8 apm_vif_idx;
     u8 sta_mac_addr[6];
+    
+    struct wakeup_source *ws_rx;
+    struct wakeup_source *ws_irqrx;
+    struct wakeup_source *ws_tx;
+    struct wakeup_source *ws_pwrctrl;
+
 #ifdef CONFIG_SCHED_SCAN
         bool is_sched_scan;
 #endif//CONFIG_SCHED_SCAN 
@@ -724,7 +764,7 @@ struct rwnx_hw {
 	bool wext_scan;
 	struct completion wext_scan_com;
 	struct list_head wext_scanre_list;
-	char wext_essid[32];
+	char wext_essid[33];
 	int support_freqs[SCAN_CHANNEL_MAX];
 	int support_freqs_number;
 #endif

@@ -677,7 +677,14 @@ void rwnx_tx_push(struct rwnx_hw *rwnx_hw, struct rwnx_txhdr *txhdr, int flags)
         sw_txhdr->need_cfm = 1;
         sw_txhdr->desc.host.status_desc_addr = ((1<<31) | rwnx_hw->usb_env.txdesc_free_idx[0]);
         aicwf_usb_host_txdesc_push(&(rwnx_hw->usb_env), 0, (long)(skb));
-        AICWFDBG(LOGINFO, "need cfm ethertype:%8x,user_idx=%d, skb=%p sta_idx:%d\n", 
+        if((sw_txhdr->desc.host.flags & TXU_CNTRL_MGMT))
+		AICWFDBG(LOGINFO, "need cfm mgmt:%x,user_idx=%d, skb=%p sta_idx:%d\n",
+			*(skb->data+sw_txhdr->headroom),
+			rwnx_hw->usb_env.txdesc_free_idx[0],
+			skb,
+			sw_txhdr->desc.host.staid);
+	else
+		AICWFDBG(LOGINFO, "need cfm ethertype:%8x,user_idx=%d, skb=%p sta_idx:%d\n",
 			sw_txhdr->desc.host.ethertype, 
 			rwnx_hw->usb_env.txdesc_free_idx[0], 
 			skb,
@@ -1227,6 +1234,179 @@ int aic_br_client_tx(struct rwnx_vif *vif, struct sk_buff **pskb)
 #endif /* CONFIG_BR_SUPPORT */
 
 
+#ifdef CONFIG_FILTER_TCP_ACK
+/* return:
+ *      0, msg buf freed by the real driver
+ *      others, skb need free by the caller,remember not use msg->skb!
+ */
+
+int intf_tx(struct rwnx_hw *priv,struct msg_buf *msg)
+{
+	struct rwnx_vif *rwnx_vif = msg->rwnx_vif;
+	struct rwnx_hw *rwnx_hw = rwnx_vif->rwnx_hw;
+	struct rwnx_txhdr *txhdr;
+	struct rwnx_sw_txhdr *sw_txhdr;
+	struct txdesc_api *desc;
+	struct rwnx_sta *sta;
+	struct rwnx_txq *txq;
+	int headroom;
+	//int max_headroom;
+	int hdr_pads;
+
+	u16 frame_len;
+	u16 frame_oft;
+	u8 tid;
+	struct sk_buff *skb=msg->skb;
+	struct ethhdr eth_t;
+
+	move_tcpack_msg(rwnx_hw,msg);
+	kfree(msg);
+
+	memcpy(&eth_t, skb->data, sizeof(struct ethhdr));
+
+	/* Get the STA id and TID information */
+	sta = rwnx_get_tx_priv(rwnx_vif, skb, &tid);
+	if (!sta)
+		goto free;
+
+	txq = rwnx_txq_sta_get(sta, tid, rwnx_hw);
+	if (txq->idx == TXQ_INACTIVE)
+		goto free;
+
+#ifdef CONFIG_RWNX_AMSDUS_TX
+	if (rwnx_amsdu_add_subframe(rwnx_hw, skb, sta, txq))
+		return NETDEV_TX_OK;
+#endif
+
+#ifdef CONFIG_BR_SUPPORT
+		 if (1) {//(check_fwstate(&padapter->mlmepriv, WIFI_STATION_STATE | WIFI_ADHOC_STATE) == _TRUE) {
+			 void *br_port = NULL;
+
+	#if (LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 35))
+			 br_port = rwnx_vif->ndev->br_port;
+	#else
+			 rcu_read_lock();
+			 br_port = rcu_dereference(rwnx_vif->ndev->rx_handler_data);
+			 rcu_read_unlock();
+	#endif
+
+			 if (br_port) {
+				 s32 res = aic_br_client_tx(rwnx_vif, &skb);
+				 if (res == -1) {
+					 goto free;
+				 }
+			 }
+		 }
+#endif /* CONFIG_BR_SUPPORT */
+
+
+	/* Retrieve the pointer to the Ethernet data */
+	// eth = (struct ethhdr *)skb->data;
+
+	skb_pull(skb, 14);
+	//hdr_pads	= RWNX_SWTXHDR_ALIGN_PADS((long)eth);
+	hdr_pads  = RWNX_SWTXHDR_ALIGN_PADS((long)skb->data);
+	headroom  = sizeof(struct rwnx_txhdr) + hdr_pads;
+
+	skb_push(skb, headroom);
+
+	txhdr = (struct rwnx_txhdr *)skb->data;
+	sw_txhdr = kmem_cache_alloc(rwnx_hw->sw_txhdr_cache, GFP_ATOMIC);
+	if (unlikely(sw_txhdr == NULL))
+		goto free;
+	txhdr->sw_hdr = sw_txhdr;
+	desc = &sw_txhdr->desc;
+
+	frame_len = (u16)skb->len - headroom;// - sizeof(*eth);
+
+	sw_txhdr->txq		= txq;
+	sw_txhdr->frame_len = frame_len;
+	sw_txhdr->rwnx_sta	= sta;
+	sw_txhdr->rwnx_vif	= rwnx_vif;
+	sw_txhdr->skb		= skb;
+	sw_txhdr->headroom	= headroom;
+	sw_txhdr->map_len	= skb->len - offsetof(struct rwnx_txhdr, hw_hdr);
+
+#ifdef CONFIG_RWNX_AMSDUS_TX
+	sw_txhdr->amsdu.len = 0;
+	sw_txhdr->amsdu.nb = 0;
+#endif
+	sw_txhdr->raw_frame = 0;
+	sw_txhdr->fixed_rate = 0;
+
+	// Fill-in the descriptor
+	memcpy(&desc->host.eth_dest_addr, eth_t.h_dest, ETH_ALEN);
+	memcpy(&desc->host.eth_src_addr, eth_t.h_source, ETH_ALEN);
+	desc->host.ethertype = eth_t.h_proto;
+	desc->host.staid = sta->sta_idx;
+	desc->host.tid = tid;
+	if (unlikely(rwnx_vif->wdev.iftype == NL80211_IFTYPE_AP_VLAN))
+		desc->host.vif_idx = rwnx_vif->ap_vlan.master->vif_index;
+	else
+		desc->host.vif_idx = rwnx_vif->vif_index;
+
+	if (rwnx_vif->use_4addr && (sta->sta_idx < NX_REMOTE_STA_MAX))
+		desc->host.flags = TXU_CNTRL_USE_4ADDR;
+	else
+		desc->host.flags = 0;
+
+	if ((rwnx_vif->tdls_status == TDLS_LINK_ACTIVE) &&
+		rwnx_vif->sta.tdls_sta &&
+		(memcmp(desc->host.eth_dest_addr.array, rwnx_vif->sta.tdls_sta->mac_addr, ETH_ALEN) == 0)) {
+		desc->host.flags |= TXU_CNTRL_TDLS;
+		rwnx_vif->sta.tdls_sta->tdls.last_tid = desc->host.tid;
+		//rwnx_vif->sta.tdls_sta->tdls.last_sn = desc->host.sn;
+	}
+
+	if (rwnx_vif->wdev.iftype == NL80211_IFTYPE_MESH_POINT) {
+		if (rwnx_vif->is_resending) {
+			desc->host.flags |= TXU_CNTRL_MESH_FWD;
+		}
+	}
+
+#ifdef CONFIG_RWNX_SPLIT_TX_BUF
+	desc->host.packet_len[0] = frame_len;
+#else
+	desc->host.packet_len = frame_len;
+#endif
+
+	txhdr->hw_hdr.cfm.status.value = 0;
+
+	if (unlikely(rwnx_prep_tx(rwnx_hw, txhdr))) {
+		kmem_cache_free(rwnx_hw->sw_txhdr_cache, sw_txhdr);
+		skb_pull(skb, headroom);
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_BUSY;
+	}
+
+	/* Fill-in TX descriptor */
+	frame_oft = sizeof(struct rwnx_txhdr) - offsetof(struct rwnx_txhdr, hw_hdr)
+				+ hdr_pads;// + sizeof(*eth);
+#if 0
+#ifdef CONFIG_RWNX_SPLIT_TX_BUF
+	desc->host.packet_addr[0] = sw_txhdr->dma_addr + frame_oft;
+	desc->host.packet_cnt = 1;
+#else
+	desc->host.packet_addr = sw_txhdr->dma_addr + frame_oft;
+#endif
+#endif
+	desc->host.status_desc_addr = sw_txhdr->dma_addr;
+
+	spin_lock_bh(&rwnx_hw->tx_lock);
+	if (rwnx_txq_queue_skb(skb, txq, rwnx_hw, false))
+		rwnx_hwq_process(rwnx_hw, txq->hwq);
+	spin_unlock_bh(&rwnx_hw->tx_lock);
+
+	return 0;//NETDEV_TX_OK
+
+free:
+	dev_kfree_skb_any(skb);
+
+	return 0;//NETDEV_TX_OK
+}
+#endif
+
+
 /**
  * netdev_tx_t (*ndo_start_xmit)(struct sk_buff *skb,
  *                               struct net_device *dev);
@@ -1257,12 +1437,14 @@ netdev_tx_t rwnx_start_xmit(struct sk_buff *skb, struct net_device *dev)
     u8 tid;
     
     struct ethhdr eth_t;
+#ifdef CONFIG_FILTER_TCP_ACK
+    struct msg_buf *msgbuf;
+#endif
 
 #ifdef CONFIG_ONE_TXQ
     skb->queue_mapping = rwnx_select_txq(rwnx_vif, skb);
 #endif
 
-    memcpy(&eth_t, skb->data, sizeof(struct ethhdr));
 
     sk_pacing_shift_update(skb->sk, rwnx_hw->tcp_pacing_shift);
     max_headroom = sizeof(struct rwnx_txhdr);
@@ -1279,6 +1461,24 @@ netdev_tx_t rwnx_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
         skb = newskb;
     }
+
+	if(skb->priority < 3)
+		skb->priority = 0;
+
+#ifdef CONFIG_FILTER_TCP_ACK
+	if(cpu_to_le16(skb->len) <= MAX_TCP_ACK){
+        msgbuf=intf_tcp_alloc_msg(msgbuf);
+        msgbuf->rwnx_vif=rwnx_vif;
+        msgbuf->skb=skb;
+        if(filter_send_tcp_ack(rwnx_hw,msgbuf,skb->data,cpu_to_le16(skb->len))){
+            return NETDEV_TX_OK;
+        }else{
+            move_tcpack_msg(rwnx_hw,msgbuf);
+            kfree(msgbuf);
+        }
+	}
+#endif
+    memcpy(&eth_t, skb->data, sizeof(struct ethhdr));
 
     /* Get the STA id and TID information */
     sta = rwnx_get_tx_priv(rwnx_vif, skb, &tid);
@@ -1678,11 +1878,11 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
     int nx_off_chan_txq_idx = NX_OFF_CHAN_TXQ_IDX;
 
     rtap_hdr = (struct ieee80211_radiotap_header*)(rtap_buf);
-    rtap_len = ieee80211_get_radiotap_len(rtap_buf);
+    rtap_len = ieee80211_get_radiotap_len(rtap_buf);//max_length
     frame_len = skb->len;
 
-    printk("rwnx_start_monitor_if_xmit, skb_len=%d, rtap_len=%d\n", skb->len, rtap_len);
-
+    AICWFDBG(LOGINFO, "rwnx_start_monitor_if_xmit, skb_len=%d, rtap_len=%d\n", skb->len, rtap_len);
+//rwnx_data_dump((char*)__func__, skb->data, skb->len);
     if((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8801) ||
         ((g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DC ||
         g_rwnx_plat->usbdev->chipid == PRODUCT_ID_AIC8800DW) && chip_id < 3)){
@@ -1690,14 +1890,20 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
     }
 
 
-    if (unlikely(rtap_hdr->it_version))
+    if (unlikely(rtap_hdr->it_version)){
+        AICWFDBG(LOGERROR, "%s itv \r\n", __func__);
         goto free_tag;
+        }
 
-    if (unlikely(skb->len < rtap_len))
+    if (unlikely(skb->len < rtap_len)){
+        AICWFDBG(LOGERROR, "%s skb->len < rtap_len \r\n", __func__);
         goto free_tag;
+        }
 
-    if (unlikely(rtap_len < sizeof(struct ieee80211_radiotap_header)))
+    if (unlikely(rtap_len < sizeof(struct ieee80211_radiotap_header))){
+        AICWFDBG(LOGERROR, "%s rtap_len < sizeof(struct ieee80211_radiotap_header) \r\n", __func__);
         goto free_tag;
+        }
 
     frame_len -= rtap_len;
     pframe = rtap_buf + rtap_len;
@@ -1709,39 +1915,44 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
         if (ret) {
             continue;
         }
+        AICWFDBG(LOGDEBUG, "%s iterator.this_arg_index:%d iterator.this_arg:%x\r\n", __func__, 
+            iterator.this_arg_index, *iterator.this_arg);
         switch (iterator.this_arg_index) {
             case IEEE80211_RADIOTAP_RATE:
                 // This is basic 802.11b/g rate; use MCS/VHT for higher rates
                 rate = *iterator.this_arg;
-                printk("rate=0x%x\n", rate);
+                AICWFDBG(LOGDEBUG, "rate=0x%x\n", rate);
                 for (idx = 0; idx < HW_RATE_MAX; idx++) {
                     if ((rate * 5) == tx_legrates_lut_rate[idx]) {
+                        AICWFDBG(LOGDEBUG, "%s datarate:%d \r\n", __func__, tx_legrates_lut_rate[idx]);
                         break;
                     }
                 }
+                
                 if (idx < HW_RATE_MAX) {
                     rate_idx = idx;
+                    AICWFDBG(LOGDEBUG, "rate_idx = %d \r\n", rate_idx);
                 } else {
-                    printk("invalid radiotap rate: %d\n", rate);
+                    AICWFDBG(LOGERROR, "invalid radiotap rate: %d\n", rate);
                 }
                 break;
 
             case IEEE80211_RADIOTAP_TX_FLAGS: {
                 u16_l txflags = get_unaligned_le16(iterator.this_arg);
-                printk("txflags=0x%x\n", txflags);
+                AICWFDBG(LOGDEBUG, "txflags=0x%x\n", txflags);
                 if ((txflags & IEEE80211_RADIOTAP_F_TX_NOACK) == 0) {
-                    printk("  TX_NOACK\n");
+                    AICWFDBG(LOGDEBUG, "  TX_NOACK\n");
                 }
                 if (txflags & 0x0010) { // Use preconfigured seq num
                     // NOTE: this is currently ignored due to qos_en=_FALSE and HW seq num override
-                    printk("  GetSequence\n");
+                    AICWFDBG(LOGDEBUG, "  GetSequence\n");
                 }
             }
             break;
 
             case IEEE80211_RADIOTAP_MCS: {
                 u8_l mcs_have = iterator.this_arg[0];
-                printk("mcs_have=0x%x\n", mcs_have);
+                AICWFDBG(LOGDEBUG, "mcs_have=0x%x\n", mcs_have);
                 rate_fmt = FORMATMOD_HT_MF;
                 if (mcs_have & IEEE80211_RADIOTAP_MCS_HAVE_BW) {
                     u8_l bw = (iterator.this_arg[1] & IEEE80211_RADIOTAP_MCS_BW_MASK);
@@ -1755,7 +1966,7 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
                         bw = IEEE80211_RADIOTAP_MCS_BW_20;
                         ch_offset = 2; // CHNL_OFFSET_UPPER;
                     }
-                    printk("  bw=%d, ch_offset=%d\n", bw, ch_offset);
+                    AICWFDBG(LOGDEBUG, "  bw=%d, ch_offset=%d\n", bw, ch_offset);
                 }
                 if (mcs_have & IEEE80211_RADIOTAP_MCS_HAVE_MCS) {
                     u8_l fixed_rate = iterator.this_arg[2] & 0x7f;
@@ -1763,17 +1974,17 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
                         fixed_rate = 0;
                     }
                     rate_idx = fixed_rate;
-                    printk("  fixed_rate=0x%x\n", fixed_rate);
+                    AICWFDBG(LOGDEBUG, "  fixed_rate=0x%x\n", fixed_rate);
                 }
                 if ((mcs_have & IEEE80211_RADIOTAP_MCS_HAVE_GI) && (iterator.this_arg[1] & IEEE80211_RADIOTAP_MCS_SGI)) {
-                    printk("  sgi\n");
+                    AICWFDBG(LOGDEBUG, "  sgi\n");
                 }
                 if ((mcs_have & IEEE80211_RADIOTAP_MCS_HAVE_FEC) && (iterator.this_arg[1] & IEEE80211_RADIOTAP_MCS_FEC_LDPC)) {
-                    printk("  ldpc\n");
+                    AICWFDBG(LOGDEBUG, "  ldpc\n");
                 }
                 if (mcs_have & IEEE80211_RADIOTAP_MCS_HAVE_STBC) {
                     u8 stbc = (iterator.this_arg[1] & IEEE80211_RADIOTAP_MCS_STBC_MASK) >> IEEE80211_RADIOTAP_MCS_STBC_SHIFT;
-                    printk("  stbc=0x%x\n", stbc);
+                    AICWFDBG(LOGDEBUG, "  stbc=0x%x\n", stbc);
                 }
             }
             break;
@@ -1783,17 +1994,17 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
                 u8 known = iterator.this_arg[0];
                 u8 flags = iterator.this_arg[2];
                 rate_fmt = FORMATMOD_VHT;
-                printk("known=0x%x, flags=0x%x\n", known, flags);
+                AICWFDBG(LOGDEBUG, "known=0x%x, flags=0x%x\n", known, flags);
                 // NOTE: this code currently only supports 1SS for radiotap defined rates
                 if ((known & IEEE80211_RADIOTAP_VHT_KNOWN_STBC) && (flags & IEEE80211_RADIOTAP_VHT_FLAG_STBC)) {
-                    printk("  stbc\n");
+                    AICWFDBG(LOGDEBUG, "  stbc\n");
                 }
                 if ((known & IEEE80211_RADIOTAP_VHT_KNOWN_GI) && (flags & IEEE80211_RADIOTAP_VHT_FLAG_SGI)) {
-                    printk("  sgi\n");
+                    AICWFDBG(LOGDEBUG, "  sgi\n");
                 }
                 if (known & IEEE80211_RADIOTAP_VHT_KNOWN_BANDWIDTH) {
                     u8_l bw = iterator.this_arg[3] & 0x1F;
-                    printk("  bw=0x%x\n",bw);
+                    AICWFDBG(LOGDEBUG, "  bw=0x%x\n",bw);
                     // NOTE: there are various L and U, but we just use straight 20/40/80
                     // since it's not clear how to set CHNL_OFFSET_LOWER/_UPPER with different
                     // sideband sizes/configurations.  TODO.
@@ -1801,26 +2012,26 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
                     txsig_bw = PHY_CHNL_BW_40;
                     if (bw == 0) {
                         txsig_bw = PHY_CHNL_BW_20;
-                        printk("  20M\n");
+                        AICWFDBG(LOGDEBUG, "  20M\n");
                     } else if (bw >=1 && bw <= 3) {
-                        printk("  40M\n");
+                        AICWFDBG(LOGDEBUG, "  40M\n");
                     } else if (bw >=4 && bw <= 10) {
-                        printk("  80M\n");
+                        AICWFDBG(LOGDEBUG, "  80M\n");
                     } else if (bw >= 11 && bw <= 25) {
-                        printk("  160M\n");
+                        AICWFDBG(LOGDEBUG, "  160M\n");
                     }
                 }
                 // User 0
                 nss = iterator.this_arg[4] & 0x0F; // Number of spatial streams
-                printk("  nss=0x%x\n", nss);
+                AICWFDBG(LOGINFO, "  nss=0x%x\n", nss);
                 if (nss > 0) {
                     if (nss > 4) nss = 4;
                     mcs = (iterator.this_arg[4]>>4) & 0x0F; // MCS rate index
                     if (mcs > 8) mcs = 9;
                     rate_idx = mcs;
-                    printk("    mcs=0x%x\n", mcs);
+                    AICWFDBG(LOGDEBUG, "    mcs=0x%x\n", mcs);
                     if (iterator.this_arg[8] & IEEE80211_RADIOTAP_CODING_LDPC_USER0) {
-                        printk("    ldpc\n");
+                        AICWFDBG(LOGDEBUG, "    ldpc\n");
                     }
                 }
             }
@@ -1850,13 +2061,13 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
                 }
                 if (data2 & IEEE80211_RADIOTAP_HE_DATA2_GI_KNOWN) {
                     u8 gi = (data5 & IEEE80211_RADIOTAP_HE_DATA5_GI) >> 4;
-                    printk("  gi: %d\n", gi);
+                    AICWFDBG(LOGDEBUG, "  gi: %d\n", gi);
                 }
             }
             break;
 
             default:
-                printk("unparsed arg: 0x%x\n",iterator.this_arg_index);
+                AICWFDBG(LOGERROR, "unparsed arg: 0x%x\n",iterator.this_arg_index);
                 break;
         }
     }
@@ -1891,14 +2102,14 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
             txq = rwnx_txq_vif_get(vif, NX_UNK_TXQ_TYPE);
     }
     if (txq->idx == TXQ_INACTIVE) {
-        printk("TXQ_INACTIVE\n");
+        AICWFDBG(LOGERROR, "TXQ_INACTIVE\n");
         goto free_tag;
     }
     // prepare to xmit
     headroom = sizeof(struct rwnx_txhdr);
     skb_mgmt = dev_alloc_skb(headroom + frame_len);
     if (!skb_mgmt) {
-        printk("skb_mgmt alloc fail\n");
+        AICWFDBG(LOGERROR, "skb_mgmt alloc fail\n");
         goto free_tag;
     }
     skb_reserve(skb_mgmt, headroom);
@@ -1920,7 +2131,7 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
     sw_txhdr = kmem_cache_alloc(rwnx_hw->sw_txhdr_cache, GFP_ATOMIC);
     if (unlikely(sw_txhdr == NULL)) {
         dev_kfree_skb(skb_mgmt);
-        printk("sw_txhdr alloc fail\n");
+        AICWFDBG(LOGERROR, "sw_txhdr alloc fail\n");
         goto free_tag;
     }
     txhdr->sw_hdr = sw_txhdr;
@@ -1962,6 +2173,7 @@ netdev_tx_t rwnx_start_monitor_if_xmit(struct sk_buff *skb, struct net_device *d
     desc->host.status_desc_addr = sw_txhdr->dma_addr;
 
     spin_lock_bh(&rwnx_hw->tx_lock);
+    AICWFDBG(LOGTRACE, "%s send data\r\n", __func__);
     if (rwnx_txq_queue_skb(skb_mgmt, txq, rwnx_hw, false))
         rwnx_hwq_process(rwnx_hw, txq->hwq);
     spin_unlock_bh(&rwnx_hw->tx_lock);
@@ -2100,8 +2312,9 @@ int rwnx_txdatacfm(void *pthis, void *host_id)
     }
 #endif /* CONFIG_RWNX_AMSDUS_TX */
 
+    headroom = sw_txhdr->headroom;
     kmem_cache_free(rwnx_hw->sw_txhdr_cache, sw_txhdr);
-    skb_pull(skb, sw_txhdr->headroom);
+    skb_pull(skb, headroom);
     consume_skb(skb);
 
     return 0;

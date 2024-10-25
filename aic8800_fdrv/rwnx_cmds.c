@@ -19,6 +19,7 @@
 #include "rwnx_strs.h"
 #include "rwnx_events.h"
 #include "aicwf_txrxif.h"
+#include "rwnx_wakelock.h"
 #ifdef AICWF_SDIO_SUPPORT
 #include "aicwf_sdio.h"
 #else
@@ -57,6 +58,10 @@ static void cmd_complete(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
             cmd->result = 0;
             complete(&cmd->complete);
         }
+    }
+    
+    if(cmd_mgr->queue_sz == 0){
+        rwnx_wakeup_unlock(g_rwnx_plat->usbdev->rwnx_hw->ws_tx);
     }
 }
 
@@ -102,6 +107,9 @@ int cmd_mgr_queue_force_defer(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd
         init_completion(&cmd->complete);
 
     list_add_tail(&cmd->list, &cmd_mgr->cmds);
+    if(cmd_mgr->queue_sz == 0){
+        rwnx_wakeup_lock(g_rwnx_plat->usbdev->rwnx_hw->ws_tx);
+    }
     cmd_mgr->queue_sz++;
     spin_unlock_bh(&cmd_mgr->lock);
 
@@ -177,6 +185,9 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
         init_completion(&cmd->complete);
 
     list_add_tail(&cmd->list, &cmd_mgr->cmds);
+    if(cmd_mgr->queue_sz == 0){
+        rwnx_wakeup_lock(g_rwnx_plat->usbdev->rwnx_hw->ws_tx);
+    }
     cmd_mgr->queue_sz++;
 
 	if(cmd->a2e_msg->id == ME_TRAFFIC_IND_REQ
@@ -465,6 +476,11 @@ static void cmd_mgr_drain(struct rwnx_cmd_mgr *cmd_mgr)
             complete(&cur->complete);
     }
     spin_unlock_bh(&cmd_mgr->lock);
+    
+    if(cmd_mgr->queue_sz == 0){
+        rwnx_wakeup_unlock(g_rwnx_plat->usbdev->rwnx_hw->ws_tx);
+    }
+
 }
 
 void rwnx_cmd_mgr_init(struct rwnx_cmd_mgr *cmd_mgr)
@@ -491,12 +507,14 @@ void rwnx_cmd_mgr_init(struct rwnx_cmd_mgr *cmd_mgr)
 
 void rwnx_cmd_mgr_deinit(struct rwnx_cmd_mgr *cmd_mgr)
 {
-    cmd_mgr->print(cmd_mgr);
-    cmd_mgr->drain(cmd_mgr);
-    cmd_mgr->print(cmd_mgr);
-    flush_workqueue(cmd_mgr->cmd_wq);
-    destroy_workqueue(cmd_mgr->cmd_wq);
-    memset(cmd_mgr, 0, sizeof(*cmd_mgr));
+    if(cmd_mgr->print && cmd_mgr->drain){
+        cmd_mgr->print(cmd_mgr);
+        cmd_mgr->drain(cmd_mgr);
+        cmd_mgr->print(cmd_mgr);
+        flush_workqueue(cmd_mgr->cmd_wq);
+        destroy_workqueue(cmd_mgr->cmd_wq);
+        memset(cmd_mgr, 0, sizeof(*cmd_mgr));
+    }
 }
 
 

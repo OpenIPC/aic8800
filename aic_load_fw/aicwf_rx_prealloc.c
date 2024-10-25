@@ -7,11 +7,15 @@
 #include "aicwf_debug.h"
 
 #ifdef CONFIG_PREALLOC_RX_SKB
+
 struct aicwf_rx_buff_list aic_rx_buff_list;
 
 int aic_rxbuff_num_max = 1000;
-
+#ifdef CONFIG_PLATFORM_HI
+int aic_rxbuff_size = (4 * 512) * 1;
+#else
 int aic_rxbuff_size = (4 * 512) * 10;
+#endif
 
 int rx_buff_list_ava = 0;
 
@@ -32,6 +36,8 @@ struct rx_buff *aicwf_prealloc_rxbuff_alloc(spinlock_t *lock)
     if(rx_buff_list_ava < 10){
         AICWFDBG(LOGERROR, "%s WARNING rxbuff is running out %d\r\n", __func__,
             rx_buff_list_ava);
+        //msleep(10);
+        mdelay(10);
     }
 
     if (list_empty(&aic_rx_buff_list.rxbuff_list)) {
@@ -66,7 +72,7 @@ void aicwf_prealloc_rxbuff_free(struct rx_buff *rxbuff, spinlock_t *lock)
     spin_unlock_irqrestore(lock, flags);
 }
 
-int aicwf_prealloc_init()
+int aicwf_prealloc_init(void)
 {
     struct rx_buff *rxbuff;
     int i = 0;
@@ -97,7 +103,7 @@ int aicwf_prealloc_init()
     return 0;
 }
 
-void aicwf_prealloc_exit()
+void aicwf_prealloc_exit(void)
 {
     struct rx_buff *rxbuff;
     struct rx_buff *pos;

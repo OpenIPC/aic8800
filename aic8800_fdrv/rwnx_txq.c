@@ -1256,7 +1256,9 @@ void rwnx_hwq_process(struct rwnx_hw *rwnx_hw, struct rwnx_hwq *hwq)
         /* sanity check for debug */
         BUG_ON(!(txq->status & RWNX_TXQ_IN_HWQ_LIST));
 		if(txq->idx == TXQ_INACTIVE){
-			printk("%s txq->idx == TXQ_INACTIVE \r\n", __func__);
+			AICWFDBG(LOGERROR, "%s txq->idx == TXQ_INACTIVE \r\n", __func__);
+            rwnx_txq_del_from_hw_list(txq);
+            rwnx_txq_flush(rwnx_hw, txq);            
 			continue;
 		}
         BUG_ON(txq->idx == TXQ_INACTIVE);

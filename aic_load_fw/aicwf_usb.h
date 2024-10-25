@@ -21,21 +21,27 @@
 
 /* USB Device ID */
 #define USB_VENDOR_ID_AIC               0xA69C
+#define USB_VENDOR_ID_AIC_V2            0x368B
 #define USB_DEVICE_ID_AIC               0x8800
-#define USB_DEVICE_ID_AIC_8801		    0x8801
+#define USB_DEVICE_ID_AIC_8801          0x8801
 
 #define CHIP_REV_U01        0x1
 #define CHIP_REV_U02        0x3
 #define CHIP_REV_U03        0x7
+#define CHIP_REV_U04        0xf
+#define CHIP_REV_U05        0x1f
 #define CHIP_SUB_REV_U04    0x20
 
 enum AICWF_IC{
     PRODUCT_ID_AIC8800 =   0,
-	PRODUCT_ID_AIC8801,
-	PRODUCT_ID_AIC8800DC,
-	PRODUCT_ID_AIC8800DW,
-	PRODUCT_ID_AIC8800D80,
-	PRODUCT_ID_AIC8800D81,
+    PRODUCT_ID_AIC8801,
+    PRODUCT_ID_AIC8800DC,
+    PRODUCT_ID_AIC8800DW,
+    PRODUCT_ID_AIC8800D80,
+    PRODUCT_ID_AIC8800D81,
+    PRODUCT_ID_AIC8800D80X2,
+    PRODUCT_ID_AIC8800D81X2,
+    PRODUCT_ID_AIC8800D89X2,
 };
 
 
@@ -114,19 +120,44 @@ enum aicwf_usb_state {
     USB_SLEEP_ST
 };
 
-#define MAX_AD_FILTER_NUM    3
+#define MAX_AD_FILTER_NUM        5// Max AD Filter num
+#define MAX_GPIO_TRIGGER_NUM     2// Max user config num of gpio
+#define MAX_ROLE_COMNO_IDX_NUM   2// Max num of ad role type combo,form( enum gpio_combo_idx) 
+
+#define AD_ROLE_FLAG         0x0f
+#define ROLE_COMBO_IDX_FLAG  0xf0
+
 enum ad_role_type {
     ROLE_ONLY,// ROLE_ONLY will trigger wake up immediately.
     ROLE_COMBO,//ROLE_COMBO will trigger When all the conditions (ad_role == ROLE_COMBO,and ad_filter is matching)are met.
 };
 
+enum gpio_combo_idx {
+    COMBO_0,
+    COMBO_1,
+};
+
+enum gpio_trigger_bit {
+    TG_IDX_0 = (1<<0),
+    TG_IDX_1 = (1<<1),
+};
 
 struct wakeup_ad_data_filter {
     uint32_t ad_data_mask;
+    uint8_t gpio_trigger_idx;
     uint8_t ad_role;//from enum ad_role_type 
     uint8_t ad_len;
     uint8_t ad_type;
     uint8_t ad_data[31];
+};
+
+struct ble_wakeup_param_t {
+    uint32_t magic_num;// "BLES" = 0x53454C42
+    uint32_t delay_scan_to;// timeout for start scan in ms
+    uint32_t reboot_to;// timeout for reboot in ms
+    uint32_t gpio_num[MAX_GPIO_TRIGGER_NUM];
+    uint32_t gpio_dft_lvl[MAX_GPIO_TRIGGER_NUM];
+    struct wakeup_ad_data_filter ad_filter[MAX_AD_FILTER_NUM];
 };
 
 struct aicwf_usb_buf {
@@ -185,6 +216,7 @@ struct aic_usb_dev {
     u16 chipid;
     bool tbusy;
     bool app_cmp;
+    u32 fw_version_uint;
 };
 
 extern void aicwf_usb_exit(void);
