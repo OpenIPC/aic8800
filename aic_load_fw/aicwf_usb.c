@@ -25,6 +25,7 @@
 #include "aicbluetooth.h"
 #include "aicwf_debug.h"
 #include "aic_compat_8800d80.h"
+#include "aic_compat_8800d80x2.h"
 
 #define JUMP_TABLE_BASE   0x161928
 #define JUMP_TABLE_OFFSET(i) ((u32)(JUMP_TABLE_BASE+(i)*4))
@@ -37,6 +38,7 @@ extern uint32_t gpio_num;//default select gpiob2 for fw_wakeup_host
 extern uint32_t gpio_dft_lvl;//0:defalut pull down,  1:default pull up
 u8 chip_id = 0;
 u8 chip_sub_id = 0;
+u8 chip_mcu_id = 0;
 int fw_loaded = 0;
 
 void aicwf_usb_tx_flowctrl(struct aic_usb_dev *usb_dev, bool state)
@@ -820,8 +822,10 @@ static int aicwf_parse_usb(struct aic_usb_dev *usb_dev, struct usb_interface *in
 
 #ifdef CONFIG_USB_MSG_EP
 	if ( usb_dev->msg_out_pipe != 0 &&
-        (usb_dev->chipid == PRODUCT_ID_AIC8801 || 
-        usb_dev->chipid == PRODUCT_ID_AIC8800D81)){
+        (usb_dev->chipid == PRODUCT_ID_AIC8801 ||
+        usb_dev->chipid == PRODUCT_ID_AIC8800D81||
+        usb_dev->chipid == PRODUCT_ID_AIC8800D81X2 ||
+        usb_dev->chipid == PRODUCT_ID_AIC8800D89X2)){
 		printk("TX Msg Bulk EP found\n");
 		usb_dev->use_msg_ep = 1;
 	}else{
@@ -838,12 +842,11 @@ static int aicwf_parse_usb(struct aic_usb_dev *usb_dev, struct usb_interface *in
 #endif
 #endif
 
-
-    if (usb->speed == USB_SPEED_HIGH) {
-        printk("Aic high speed USB device detected\n");
-    } else {
-        printk("Aic full speed USB device detected\n");
-    }
+    printk("Aic %s speed USB device detected\n", 
+            (usb->speed == USB_SPEED_SUPER) ? "super" :
+            (usb->speed == USB_SPEED_HIGH)  ? "high"  :
+            (usb->speed == USB_SPEED_FULL)  ? "full"  :
+            (usb->speed == USB_SPEED_LOW)   ? "low"   : "NG");
     exit:
     return ret;
 }
@@ -979,6 +982,14 @@ u32 patch_tbl[][2] ={
 #if !defined(CONFIG_LINK_DET_5G)
 {0x0104, 0x00000000}, //link_det_5g
 #endif
+#ifdef CONFIG_USB_SUSPEND_REBOOT_TIME
+{0x0110, 0x03e80001}//reboot time when usb suspend,0001 enables reboot on suspend, default 0x3e8 = 1000ms reboot
+#else
+#ifdef CONFIG_SUPPORT_USB_SUSP
+//USB SUSP keep working 0x0100:enable 0x0000:disable
+{0x0110, 0x00000100}
+#endif
+#endif
 };
 
 
@@ -1081,7 +1092,7 @@ static int system_config_8800(struct aic_usb_dev *usb_dev){
         printk("%x rd fail: %d\n", mem_addr, ret);
         return ret;
     }
-    chip_id = (u8)(rd_mem_addr_cfm.memdata >> 16);
+    chip_id =(u8)(rd_mem_addr_cfm.memdata >> 16);
     //printk("%x=%x\n", rd_mem_addr_cfm.memaddr, rd_mem_addr_cfm.memdata);
     ret = rwnx_send_dbg_mem_read_req(usb_dev, 0x00000004, &rd_mem_addr_cfm);
     if (ret) {
@@ -1130,6 +1141,8 @@ static int system_config(struct aic_usb_dev *usb_dev)
         return system_config_8800(usb_dev);
     }else if(usb_dev->chipid == PRODUCT_ID_AIC8800D80){
         return system_config_8800d80(usb_dev);
+    }else if(usb_dev->chipid == PRODUCT_ID_AIC8800D80X2){
+        return system_config_8800d80x2(usb_dev);
     }else{
         return -1;
     }
@@ -1320,20 +1333,40 @@ static int aicloadfw_chipmatch(struct aic_usb_dev *usb_dev, u16 vid, u16 pid){
 
     if(pid == USB_DEVICE_ID_AIC){
         usb_dev->chipid = PRODUCT_ID_AIC8800;
-		AICWFDBG(LOGINFO, "%s USE AIC8800\r\n", __func__);
-		return 0;
-	}else if(pid == USB_DEVICE_ID_AIC_8801){
-		usb_dev->chipid = PRODUCT_ID_AIC8801;
-		AICWFDBG(LOGINFO, "%s USE AIC8801\r\n", __func__);
-		return 0;
-	}else if(pid == USB_DEVICE_ID_AIC_8800D80){
-		usb_dev->chipid = PRODUCT_ID_AIC8800D80;
-		AICWFDBG(LOGINFO, "%s USE AIC8800D80\r\n", __func__);
-		return 0;
-	}else if(pid == USB_DEVICE_ID_AIC_8800D81){
+	AICWFDBG(LOGINFO, "%s USE AIC8800\r\n", __func__);
+	return 0;
+    }else if(pid == USB_DEVICE_ID_AIC_8801){
+	usb_dev->chipid = PRODUCT_ID_AIC8801;
+	AICWFDBG(LOGINFO, "%s USE AIC8801\r\n", __func__);
+	return 0;
+    }else if(pid == USB_DEVICE_ID_AIC_8800D80){
+	usb_dev->chipid = PRODUCT_ID_AIC8800D80;
+	AICWFDBG(LOGINFO, "%s USE AIC8800D80\r\n", __func__);
+	return 0;
+    }else if(pid == USB_DEVICE_ID_AIC_8800D81){
         usb_dev->chipid = PRODUCT_ID_AIC8800D81;
-		AICWFDBG(LOGINFO, "%s USE AIC8800D81\r\n", __func__);
+	AICWFDBG(LOGINFO, "%s USE AIC8800D81\r\n", __func__);
         return 0;
+    }else if(pid == USB_DEVICE_ID_AIC_8800D40){
+        usb_dev->chipid = PRODUCT_ID_AIC8800D80;
+        AICWFDBG(LOGINFO, "%s USE AIC8800D40\r\n", __func__);
+        return 0;
+    }else if(pid == USB_DEVICE_ID_AIC_8800D41){
+	usb_dev->chipid = PRODUCT_ID_AIC8800D81;
+	AICWFDBG(LOGINFO, "%s USE AIC8800D41\r\n", __func__);
+	return 0;
+    }else if(pid == USB_DEVICE_ID_AIC_8800D80X2 && vid == USB_VENDOR_ID_AIC_V2){
+		usb_dev->chipid = PRODUCT_ID_AIC8800D80X2;
+		AICWFDBG(LOGINFO, "%s USE AIC8800D80X2\r\n", __func__);
+		return 0;
+    }else if(pid == USB_DEVICE_ID_AIC_8800D81X2 && vid == USB_VENDOR_ID_AIC_V2){
+		usb_dev->chipid = PRODUCT_ID_AIC8800D81X2;
+		AICWFDBG(LOGINFO, "%s USE AIC8800D81X2\r\n", __func__);
+		return 0;
+    }else if(pid == USB_DEVICE_ID_AIC_8800D89X2 && vid == USB_VENDOR_ID_AIC_V2){
+		usb_dev->chipid = PRODUCT_ID_AIC8800D89X2;
+		AICWFDBG(LOGINFO, "%s USE AIC8800D89X2\r\n", __func__);
+		return 0;
     }else{
         return -1;
     }
@@ -1423,54 +1456,85 @@ int aicfw_download_fw_8800(struct aic_usb_dev *usb_dev){
             data & mask = "0x46 0x00" 0x00 0x00 0x00 0x00 0x00 0x00 0x00 "0x30 0xff 0xff 0x43 0x52 0x45 0x4c 0x42"
             using data & mask value condition to wakeup host_wake_bt gpio
 */
-            struct wakeup_ad_data_filter* ad_data_filter = (struct wakeup_ad_data_filter*)kmalloc(MAX_AD_FILTER_NUM*sizeof(struct wakeup_ad_data_filter), GFP_KERNEL);
-            uint32_t *write_blocks = (uint32_t *)ad_data_filter;
-            
+            struct ble_wakeup_param_t* wakeup_param = (struct ble_wakeup_param_t*)kmalloc(sizeof(struct ble_wakeup_param_t), GFP_KERNEL);
+            uint32_t *write_blocks = (uint32_t *)wakeup_param;
+
             printk("%s ble scan wakeup \r\n", __func__);
 
-            memset(ad_data_filter, 0, MAX_AD_FILTER_NUM*sizeof(struct wakeup_ad_data_filter));
+            memset(wakeup_param, 0, sizeof(struct ble_wakeup_param_t));
             rwnx_plat_bin_fw_upload_android(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, FW_BLE_SCAN_AD_FILTER_NAME);
-
-            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF00, 0x53454C42);//magic_num
-            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF04, ble_scan_wakeup_reboot_time);//reboot time
-            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF08, gpio_num);////default select gpiob2 for fw_wakeup_host
-            rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF0c, gpio_dft_lvl);////0:defalut pull down,  1:default pull up+            /********************************************************************/
-            //MAX_AD_FILTER_NUM=3 :num 0
+            wakeup_param->magic_num = 0x53454C42;//magic_num
+            wakeup_param->delay_scan_to = 1000;//delay start scan time(ms)
+            wakeup_param->reboot_to = ble_scan_wakeup_reboot_time;//reboot time
+            /******************************************************************/
+            ///gpio_trigger_idx : 0    if wakeup_param->gpio_dft_lvl[0]=0xfe,this idx will be invalid.
+            wakeup_param->gpio_num[0] = gpio_num;////default select gpiob2 for fw_wakeup_host
+            wakeup_param->gpio_dft_lvl[0] = gpio_dft_lvl;////0:defalut pull down,  1:default pull up
+            ///gpio_trigger_idx : 1    if wakeup_param->gpio_dft_lvl[1]=0xfe,this idx will be invalid.
+            wakeup_param->gpio_num[1] = 3;////default select gpiob2 for fw_wakeup_host
+            wakeup_param->gpio_dft_lvl[1] = 1;////0:defalut pull down,  1:default pull up
+            /********************************************************************/
+            //MAX_AD_FILTER_NUM=5 :num 0
             {
                 const uint8_t data[11] = {0x59,0x4B,0x32,0x42,0x41,0x5F,0x54,0x45,0x53,0x54,0x33};
-                ad_data_filter[0].ad_len = 12;
-                ad_data_filter[0].ad_type = 0x09;
-                memcpy(ad_data_filter[0].ad_data, data,ad_data_filter[0].ad_len-1);// 1111 1111 1110 0000 0000 0000 0000 0000 //0xffe00000
-                ad_data_filter[0].ad_data_mask = 0xffe00000;
-                ad_data_filter[0].ad_role = ROLE_COMBO;
+                wakeup_param->ad_filter[0].ad_len = 12;
+                wakeup_param->ad_filter[0].ad_type = 0x09;
+                memcpy(wakeup_param->ad_filter[0].ad_data, data,wakeup_param->ad_filter[0].ad_len-1);// 1111 1111 1110 0000 0000 0000 0000 0000 //0xffe00000
+                wakeup_param->ad_filter[0].ad_data_mask = 0xffe00000;
+                wakeup_param->ad_filter[0].ad_role = ROLE_COMBO|(COMBO_0<<4);
+                wakeup_param->ad_filter[0].gpio_trigger_idx = TG_IDX_0;//0: match for wakeup_param->gpio_num[0]       1: match for wakeup_param->gpio_num[1]
             }
             /********************************************************************/
-            //MAX_AD_FILTER_NUM=3 :num 1
+            //MAX_AD_FILTER_NUM=5 :num 1
             {
                 const uint8_t data[2] = {0x12,0x18};
-                ad_data_filter[1].ad_len = 3;
-                ad_data_filter[1].ad_type = 0x3;
-                memcpy(ad_data_filter[1].ad_data, data,ad_data_filter[1].ad_len-1);// 1100 0000 0000 0000 0000 0000 0000 0000 //0xc0000000
-                ad_data_filter[1].ad_data_mask = 0xc0000000;
-                ad_data_filter[1].ad_role = ROLE_COMBO;
+                wakeup_param->ad_filter[1].ad_len = 3;
+                wakeup_param->ad_filter[1].ad_type = 0x3;
+                memcpy(wakeup_param->ad_filter[1].ad_data, data,wakeup_param->ad_filter[1].ad_len-1);// 1100 0000 0000 0000 0000 0000 0000 0000 //0xc0000000
+                wakeup_param->ad_filter[1].ad_data_mask = 0xc0000000;
+                wakeup_param->ad_filter[1].ad_role = ROLE_COMBO|(COMBO_0<<4);
+                wakeup_param->ad_filter[1].gpio_trigger_idx = TG_IDX_0;//0: match for wakeup_param->gpio_num[0]       1: match for wakeup_param->gpio_num[1]
             }
             /********************************************************************/
-            //MAX_AD_FILTER_NUM=3 :num 2
+            //MAX_AD_FILTER_NUM=5 :num 2
             {
                 //const uint8_t data[11] = {0x59,0x4B,0x32,0x42,0x41,0x5F,0x54,0x45,0x53,0x54,0x33};
-                ad_data_filter[2].ad_len = 0;
-                ad_data_filter[2].ad_type = 0;
-                //memcpy(ad_data_filter[2].ad_data, data,ad_data_filter[2].ad_len-1);// 1100 0000 0111 1111 1100 0000 0000 0000 //0xc07fc000
-                ad_data_filter[2].ad_data_mask = 0;
-                ad_data_filter[2].ad_role = ROLE_COMBO;
+                wakeup_param->ad_filter[2].ad_len = 0;
+                wakeup_param->ad_filter[2].ad_type = 0;
+                //memcpy(wakeup_param->ad_filter[2].ad_data, data,wakeup_param->ad_filter[2].ad_len-1);// 1100 0000 0111 1111 1100 0000 0000 0000 //0xc07fc000
+                wakeup_param->ad_filter[2].ad_data_mask = 0;
+                wakeup_param->ad_filter[2].ad_role = ROLE_ONLY;
+                wakeup_param->ad_filter[2].gpio_trigger_idx = TG_IDX_0;//0: match for wakeup_param->gpio_num[0]       1: match for wakeup_param->gpio_num[1]
+            }
+            /********************************************************************/
+            //MAX_AD_FILTER_NUM=5 :num 3
+            {
+                //const uint8_t data[11] = {0x59,0x4B,0x32,0x42,0x41,0x5F,0x54,0x45,0x53,0x54,0x33};
+                wakeup_param->ad_filter[3].ad_len = 0;
+                wakeup_param->ad_filter[3].ad_type = 0;
+                //memcpy(wakeup_param->ad_filter[2].ad_data, data,wakeup_param->ad_filter[2].ad_len-1);// 1100 0000 0111 1111 1100 0000 0000 0000 //0xc07fc000
+                wakeup_param->ad_filter[3].ad_data_mask = 0;
+                wakeup_param->ad_filter[3].ad_role = ROLE_COMBO|(COMBO_1<<4);
+                wakeup_param->ad_filter[3].gpio_trigger_idx = TG_IDX_0;//0: match for wakeup_param->gpio_num[0]       1: match for wakeup_param->gpio_num[1]
+            }
+            /********************************************************************/
+            //MAX_AD_FILTER_NUM=5 :num 4
+            {
+                //const uint8_t data[11] = {0x59,0x4B,0x32,0x42,0x41,0x5F,0x54,0x45,0x53,0x54,0x33};
+                wakeup_param->ad_filter[4].ad_len = 0;
+                wakeup_param->ad_filter[4].ad_type = 0x09;
+                //memcpy(wakeup_param->ad_filter[4].ad_data, data,wakeup_param->ad_filter[4].ad_len-1);// 1111 1111 1110 0000 0000 0000 0000 0000 //0xffe00000
+                wakeup_param->ad_filter[4].ad_data_mask = 0xffe00000;
+                wakeup_param->ad_filter[4].ad_role = ROLE_COMBO|(COMBO_1<<4);
+                wakeup_param->ad_filter[4].gpio_trigger_idx = TG_IDX_0|TG_IDX_1;//0: match for wakeup_param->gpio_num[0]       1: match for wakeup_param->gpio_num[1]
             }
 
-            for(i = 0; i < ((MAX_AD_FILTER_NUM*sizeof(struct wakeup_ad_data_filter))/4 +1); i++){
+            for(i = 0; i < (sizeof(struct ble_wakeup_param_t)/4 +1); i++){
                 printk("write_blocks[%d]:0x%08X \r\n", i, write_blocks[i]);
-                rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF10 + (4 * i), write_blocks[i]);
+                rwnx_send_dbg_mem_write_req(usb_dev, 0x15FF00 + (4 * i), write_blocks[i]);
             }
             rwnx_send_dbg_start_app_req(usb_dev, RAM_FW_BLE_SCAN_WAKEUP_ADDR, HOST_START_APP_AUTO);
-            kfree(ad_data_filter);
+            kfree(wakeup_param);
 
             return -1;
         }else {
@@ -1538,6 +1602,8 @@ int aicfw_download_fw(struct aic_usb_dev *usb_dev)
         return aicfw_download_fw_8800(usb_dev);
     }else if(usb_dev->chipid == PRODUCT_ID_AIC8800D80){
         return aicfw_download_fw_8800d80(usb_dev);
+    }else if(usb_dev->chipid == PRODUCT_ID_AIC8800D80X2){
+        return aicfw_download_fw_8800d80x2(usb_dev);
     }else{
         return -1;
     }
@@ -1563,7 +1629,10 @@ static int aicwf_usb_probe(struct usb_interface *intf, const struct usb_device_i
 
 	if(fw_loaded == 1 && 
         (id->idProduct == USB_DEVICE_ID_AIC_8801 || 
-        id->idProduct == USB_DEVICE_ID_AIC_8800D81)){
+        id->idProduct == USB_DEVICE_ID_AIC_8800D81 ||
+	    id->idProduct == USB_DEVICE_ID_AIC_8800D41 ||
+	    id->idProduct == USB_DEVICE_ID_AIC_8800D81X2 ||
+	    id->idProduct == USB_DEVICE_ID_AIC_8800D89X2)){
 		return -1;
 	}
 
@@ -1630,15 +1699,17 @@ static int aicwf_usb_probe(struct usb_interface *intf, const struct usb_device_i
 
     aic_bt_platform_init(usb_dev);
 
-    if (usb->speed != USB_SPEED_HIGH) {
-        printk("Aic full speed USB device detected\n");
+    if ((usb->speed != USB_SPEED_HIGH) && (usb->speed != USB_SPEED_SUPER)) {
+        printk("Aic USB device detected speed = %d\n", usb->speed);
         system_reboot(usb_dev);
         goto out_free_bus;
     }
 
 	if(fw_loaded == 0 && 
-        (usb_dev->chipid == PRODUCT_ID_AIC8801 || 
-        usb_dev->chipid == PRODUCT_ID_AIC8800D81)){
+        (usb_dev->chipid == PRODUCT_ID_AIC8801 ||
+        usb_dev->chipid == PRODUCT_ID_AIC8800D81||
+        usb_dev->chipid == PRODUCT_ID_AIC8800D81X2 ||
+        usb_dev->chipid == PRODUCT_ID_AIC8800D89X2)){
 		rwnx_send_reboot(usb_dev);
 		goto out_free_bus;
 	}
@@ -1719,6 +1790,11 @@ static struct usb_device_id aicwf_usb_id_table[] = {
     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8801)},
     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D80)},
     {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D81)},
+    {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D40)},
+    {USB_DEVICE(USB_VENDOR_ID_AIC, USB_DEVICE_ID_AIC_8800D41)},
+    {USB_DEVICE(USB_VENDOR_ID_AIC_V2, USB_DEVICE_ID_AIC_8800D80X2)},
+    {USB_DEVICE(USB_VENDOR_ID_AIC_V2, USB_DEVICE_ID_AIC_8800D81X2)},
+    {USB_DEVICE(USB_VENDOR_ID_AIC_V2, USB_DEVICE_ID_AIC_8800D89X2)},
     {}
 };
 

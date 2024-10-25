@@ -16,26 +16,37 @@
 
 /* USB Device ID */
 #define USB_VENDOR_ID_AIC                0xA69C
+#define USB_VENDOR_ID_AIC_V2             0x368B
 
 #ifndef CONFIG_USB_BT
-#define USB_PRODUCT_ID_AIC8800               0x8800
+#define USB_PRODUCT_ID_AIC8800          0x8800
+#define USB_PRODUCT_ID_AIC8801          0x8801
+#define USB_PRODUCT_ID_AIC8800DC        0x88dc
+#define USB_PRODUCT_ID_AIC8800DW        0x88dd
+#define USB_PRODUCT_ID_AIC8800D81       0x8d81
+#define USB_PRODUCT_ID_AIC8800D81X2     0x8d91
+#define USB_PRODUCT_ID_AIC8800D89X2     0x8d99
 #else
-#define USB_PRODUCT_ID_AIC8801				0x8801
-#define USB_PRODUCT_ID_AIC8800DC			0x88dc
-#define USB_PRODUCT_ID_AIC8800DW            0x88dd
-#define USB_PRODUCT_ID_AIC8800D81           0x8d81
-
+#define USB_PRODUCT_ID_AIC8801          0x8801
+#define USB_PRODUCT_ID_AIC8800DC        0x88dc
+#define USB_PRODUCT_ID_AIC8800DW        0x88dd
+#define USB_PRODUCT_ID_AIC8800D81       0x8d81
+#define USB_PRODUCT_ID_AIC8800D41       0x8d41
+#define USB_PRODUCT_ID_AIC8800D81X2     0x8d91
+#define USB_PRODUCT_ID_AIC8800D89X2     0x8d99
 #endif
 
 enum AICWF_IC{
 	PRODUCT_ID_AIC8801	=	0,
 	PRODUCT_ID_AIC8800DC,
 	PRODUCT_ID_AIC8800DW,
-	PRODUCT_ID_AIC8800D81
+	PRODUCT_ID_AIC8800D81,
+	PRODUCT_ID_AIC8800D81X2,
+	PRODUCT_ID_AIC8800D89X2
 };
 
 
-#define AICWF_USB_RX_URBS               (200)//(200)
+#define AICWF_USB_RX_URBS               (20)//(200)
 #ifdef CONFIG_USB_MSG_IN_EP
 #define AICWF_USB_MSG_RX_URBS           (100)
 #endif
@@ -47,7 +58,12 @@ enum AICWF_IC{
 #endif
 #define AICWF_USB_TX_LOW_WATER         (AICWF_USB_TX_URBS/4)//25%
 #define AICWF_USB_TX_HIGH_WATER        (AICWF_USB_TX_LOW_WATER*3)//75%
+#ifdef CONFIG_PLATFORM_HI
+#define AICWF_USB_AGGR_MAX_PKT_SIZE     (2048*1)
+#else
 #define AICWF_USB_AGGR_MAX_PKT_SIZE     (2048*10)
+#endif
+#define AICWF_USB_MSG_MAX_PKT_SIZE      (2048)
 #define AICWF_USB_MAX_PKT_SIZE          (2048)
 #define AICWF_USB_FC_PERSTA_HIGH_WATER		64
 #define AICWF_USB_FC_PERSTA_LOW_WATER		16
@@ -132,9 +148,15 @@ struct aic_usb_dev {
 
     int tx_free_count;
     int tx_post_count;
-
+    bool rx_prepare_ready;
+#if 0
     struct aicwf_usb_buf usb_tx_buf[AICWF_USB_TX_URBS];
     struct aicwf_usb_buf usb_rx_buf[AICWF_USB_RX_URBS];
+#else
+    struct aicwf_usb_buf *usb_tx_buf;
+    struct aicwf_usb_buf *usb_rx_buf;
+#endif
+
 #ifdef CONFIG_USB_MSG_IN_EP
 	struct aicwf_usb_buf usb_msg_rx_buf[AICWF_USB_MSG_RX_URBS];
 #endif
