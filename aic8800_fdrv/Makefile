@@ -5,7 +5,7 @@ EXTRA_CFLAGS += -Wno-implicit-fallthrough
 RWNX_VERS_NUM := 6.4.3.0
 
 CONFIG_AIC8800_WLAN_SUPPORT = m
-MODULE_NAME = aic8800_fdrv
+MODULE_NAME = aic8800
 CONFIG_COUNTRY_CODE = "00"
 
 # Support of bootrom start
